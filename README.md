@@ -5,7 +5,12 @@
 The Ultronic Medium Hypothesis (UMH) is a novel theoretical framework proposing that all physical phenomena - matter, fields, forces, and spacetime curvature emerge from oscillations in a continuous mechanical medium. Rather than relying on discrete particles or abstract quantum fields, UMH models the universe as a high-dimensional elastic substrate whose excitations give rise to observable physics. This includes everything from gravitational waves and cosmological expansion to gauge symmetries, quantum entanglement, and thermodynamic behavior.
 
 This repository contains a complete simulation suite for validating UMH through a series of rigorous, numerically intensive tests. The simulations cover a wide range of domains, including general relativity (via gravitational waveforms and Einstein tensor validation), quantum theory (Planck constant emergence and entanglement tests), cosmology (CMB, BAO, redshift models), and gauge field dynamics (U(1), SU(2), SU(3)). All tests are reproducible and designed to generate high-resolution figures, output data, and logs for scientific publication and peer validation.
----
+
+<p align="center">
+  <img src="illustrations/UMH_GR_QFT_SM.png" width="300"/>
+  <br>
+  <em>How General Relativity, Quantum Field Theory, and the Standard Model emerge from the Ultronic Medium Hypothesis (UMH)</em>
+</p>
 
 ===========================
 # Ultronic Medium Hypothesis (UMH) Simulation Suite
