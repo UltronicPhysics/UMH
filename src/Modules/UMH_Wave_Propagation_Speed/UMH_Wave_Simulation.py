@@ -235,7 +235,7 @@ def run(config_overrides=None):
     v2 = v**2 #Wave Speed squared.
 
     # Safety Factor Adjust GridSize.
-    min_factor, max_factor = get_auto_cfl_clamp(size, steps)
+    min_factor, max_factor = get_auto_cfl_clamp(size, steps, mode="wavespeed")
     print(f"{title}: auto_cfl_clamp, Min:{min_factor}, Max:{max_factor}")
     safety_factor = get_adaptive_safety_factor(size, base=safety_factor, min_factor=min_factor, max_factor=max_factor)
 

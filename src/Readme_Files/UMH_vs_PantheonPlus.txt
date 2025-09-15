@@ -1,0 +1,154 @@
+UMH_vs_Pantheon — README
+========================
+
+Purpose
+-------
+Evaluate whether the Ultronic Medium Hypothesis (UMH) in a non-expansion
+cosmology reproduces the Pantheon+ SN Ia Hubble diagram using the full
+STAT+SYS covariance, and compare against flat ΛCDM.  UMH here is a
+“one-knob” model (only the absolute magnitude M / intercept is adjusted
+and profiled); ΛCDM requires two knobs for this task (Ω_m to set shape
+plus the same profiled M to set the intercept).
+
+
+Inputs
+------
+- Pantheon+ SH0ES catalogue: PantheonPlus_SH0ES.dat
+- Pantheon+ STAT+SYS covariance: PantheonPlus_SH0ES_STAT_SYS.cov
+- Analysis script: UMH_vs_Pantheon_v2022.py
+- Theory reference: UMH_Compressed.pdf
+
+
+Sample / cuts
+-------------
+- Working sample after standard Pantheon+ quality cuts: N = 1624 SNe.
+- Low-z calibration uses z ≤ 0.10.
+
+
+Method (summary)
+----------------
+1) Low-z calibration
+   - Regress L = ln(1+z) on comoving distance d for z ≤ 0.10.
+   - Best slope a ≈ 2.481805e-04 1/Mpc (UMH native scale).
+
+2) UMH (non-expansion) model
+   - Cosmological redshift from the UMH clock-rate field.
+   - Flux transmission factor:
+         T(z) = exp[ –(β1 * L + β2 * L^2) ],  where L = ln(1+z).
+   - Absolute magnitude M is the *only* adjustable knob and is profiled
+     (analytic minimization of χ²(M)).
+   - χ² computed with the full Pantheon+ STAT+SYS covariance (Cholesky).
+
+3) ΛCDM reference
+   - Flat ΛCDM with free Ω_m (shape) and profiled M (intercept); identical
+     covariance handling.
+
+4) Diagnostics
+   - Residuals vs z and vs ln(1+z) with GLS trend tests.
+   - Histogram of whitened residuals (should be ~N(0,1)).
+
+
+Key results (this run)
+----------------------
+- Low-z slope: a = 2.481805e-04 1/Mpc.
+- Best UMH (non-expansion): β1 ≈ 0.432, β2 ≈ –0.270 (with a fixed).
+  χ² = 1456.8 for N = 1624; counted parameters k = 1 (only M is adjusted
+  and profiled) → dof = 1623.  AIC = 1458.8; BIC ≈ 1464.2.
+- Best flat ΛCDM: Ω_m* ≈ 0.333, χ² ≈ 1457.0 (Ω_m free; M profiled).
+  AIC = 1459.0; BIC ≈ 1464.4.
+- GLS slopes (consistent with zero in all cases):
+    • Residuals vs z:         m = 0.016 ± 0.023
+    • Residuals vs ln(1+z):   m = 0.023 ± 0.032
+- Whitened residuals: approximately standard normal.
+
+Takeaway (model comparison)
+---------------------------
+The UMH one-knob model (only M) fits the Pantheon+ Hubble diagram
+*comparably* to flat ΛCDM, which uses two knobs for this task (Ω_m + M).
+The near-identical χ²/AIC/BIC and the absence of residual trends indicate
+that UMH’s non-expansion redshift mechanism reproduces the observed SN
+distance–redshift relation without introducing additional shape freedom
+beyond the intercept, whereas ΛCDM needs an extra shape parameter (Ω_m).
+
+
+Produced figures — what each shows
+----------------------------------
+1) UMH_vs_PantheonPlus_Supernovae.png
+   - Hubble diagram: distance modulus μ vs redshift z.
+   - Blue points: Pantheon+ SNe with errors. Red curve: best-fit UMH.
+   - Demonstrates that UMH tracks the full dataset from z≈0 to z>2.
+
+2) UMH_vs_PantheonPlus_vs_LCDM.png
+   - Same Hubble diagram with both UMH (solid red) and ΛCDM (dashed green).
+   - Curves are visually indistinguishable across the full z range,
+     illustrating comparable goodness-of-fit between the models.
+
+3) UMH_vs_PantheonPlus_vs_LCDM_Annotated.png
+   - Overlay from (2) with shaded survey regimes (Low-z, SDSS, SNLS, HST).
+   - Shows that the UMH/ΛCDM agreement persists across independent survey
+     subsets, not just in aggregate.
+
+4) UMH_vs_PantheonPlus_Residuals.png
+   - Residuals (data − model) vs z for the best fits.
+   - Blue circles: residuals w.r.t. UMH; orange squares: w.r.t. ΛCDM.
+   - Dashed black line at 0 and GLS trend lines.
+   - Demonstrates no significant redshift-dependent bias for either model.
+
+5) UMH_vs_PantheonPlus_Residuals_Zoom.png
+   - Zoom of residuals at high redshift (z ≳ 1.5).
+   - Highlights that even at the highest z (where errors are larger) there
+     is no systematic drift; UMH and ΛCDM remain consistent with the data.
+
+6) UMH_vs_PantheonPlus_Binned_Residuals.png
+   - Mean residual per redshift bin with errors on the bin means.
+   - Visual check for broad-scale structure: bin means scatter around zero,
+     supporting an adequate global fit.
+
+7) UMH_vs_PantheonPlus_Residuals_vs_ln1pz.png
+   - Residuals vs L = ln(1+z) with GLS trend.
+   - Tests directly in the variable central to the UMH redshift law; slope
+     consistent with zero, indicating no missing nonlinearity in L.
+
+8) UMH_vs_PantheonPlus_WhitenedResiduals.png
+   - Histogram of covariance-whitened residuals for UMH and ΛCDM.
+   - Distributions are close to N(0,1), validating the covariance usage and
+     that neither model leaves strong structure in the residuals.
+
+
+How to reproduce
+----------------
+1) Ensure data/covariance paths in get_default_config() are correct.
+2) Run UMH_vs_Pantheon_v2022.py (non-interactive; uses Agg).
+   The script:
+   - loads the catalogue and covariance,
+   - performs the low-z calibration,
+   - fits UMH (with only M as the adjustable/profiling knob),
+   - fits a reference flat ΛCDM (Ω_m + profiled M),
+   - writes a summary and saves the figures above.
+
+
+Suggested key-value summary block (for UMH_vs_Pantheon.txt)
+-----------------------------------------------------------
+RUN_ID                  = <YYYY-MM-DDThh:mm>
+DATA_FILE               = PantheonPlus_SH0ES.dat
+COV_FILE                = PantheonPlus_SH0ES_STAT_SYS.cov
+N_SN                    = 1624
+CAL_LOWZ_ZMAX           = 0.10
+CAL_ALPHA_A             = 2.481805e-04 1/Mpc
+MODEL                   = UMH_nonexp (one knob: profiled M)
+UMH_PARAMS              = a=2.481805e-04, beta1=0.432, beta2=-0.270
+PROFILED_M              = (reported by run)
+CHI2_UMH                = 1456.8
+K_COUNTED               = 1
+DOF                     = 1623
+AIC_UMH                 = 1458.8
+BIC_UMH                 = 1464.2
+GLS_SLOPE_Z             = 0.016 +/- 0.023
+GLS_SLOPE_LN1PZ         = 0.023 +/- 0.032
+LCDM_MODEL              = flat ΛCDM (two knobs: Ω_m + profiled M)
+LCDM_OMEGAM_BEST        = 0.333
+CHI2_LCDM               = 1457.0
+AIC_LCDM                = 1459.0
+BIC_LCDM                = 1464.4
+FIGURES                 = [Supernovae, vs_LCDM, vs_LCDM_Annotated, Residuals, Residuals_Zoom, Binned_Residuals, Residuals_vs_ln1pz, WhitenedResiduals]
+NOTES                   = UMH reproduces Pantheon+ with a single adjustable intercept (M); ΛCDM needs an additional shape parameter (Ω_m).

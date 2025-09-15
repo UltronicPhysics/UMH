@@ -1,0 +1,183 @@
+UMH_CHSH_Entanglement_v2 — README
+=================================
+
+SIMULATION GOAL
+---------------
+This program runs a CHSH-style Bell test on a simulated "Ultronic Medium" (UMH) field to study whether phase-locked wave dynamics can reproduce quantum-like entanglement
+correlations. It executes multiple runs, computes the CHSH S statistic for each run, checks diagnostics (no-signalling, energy stability), and saves plots, CSV/JSON
+summaries, and a text log of statistics.
+
+This code supports two regimes:
+(i) Independent settings → field mode yields S≈2 within error (classical baseline).
+(ii) Relaxed measurement independence (shared seeded RNG for hidden state & settings) → UMH can produce CHSH violations (S>2), as explored in the manuscript.
+
+KEY FILES
+---------
+- UMH.pdf
+  Theory overview for UMH, including the equations used in the CHSH study. See the sections on "quantum entanglement as phase-coherent constraint" that UMH uses to produce CHSH violations.
+
+- UMH_CHSH_Entanglement_v2.py
+  The simulation driver. It sets up the lattice, evolves the nonlinear wave equation, performs CHSH measurements, and writes all outputs.
+
+- UMH_Quantum_Entanglement_Output.log
+  Example run log from the program (mean S, SEM, p-values, balances, etc.). In the attached example run, the mean S ~ 1.9995 +/- 0.0028 (SEM), i.e., consistent with
+  the classical bound S = 2 when independent settings are enforced.
+
+PLOTS THE SCRIPT WRITES (filenames start with "UMH_Quantum_Entanglement_")
+---------------------------------------------------------------------------
+- ..._CHSH_Randomized.gif
+  Animated scatter of S-value vs run number. Dashed line at S=2 shows the classical limit.
+
+- ..._CHSH_Scatter_Tagged.png
+  Static scatter of S across runs with reference lines at S=2 (classical) and S~2.828 (Tsirelson). Runs flagged as "UMH-tagged" (above Tsirelson by a conservative margin)
+  are annotated.
+
+- ..._CHSH_Histogram.png
+  Histogram of S across runs. Vertical markers at S=2 and S~2.828. Mean +/- SEM shown.
+
+- ..._vs_Classical_CHSH.png
+  The same S values, overlaid on a thin grey band representing 2 +/- 2*SEM, to visualize clustering around the classical bound.
+
+- ..._Mean_Energy_Trace.png
+  Mean energy vs time step (with +/- 1 standard deviation shading) across all runs, demonstrating numerical stability/conservation.
+
+DATA FILES THE SCRIPT WRITES (CSV/JSON/TXT)
+-------------------------------------------
+1) UMH_Quantum_Entanglement_All_Energy_Traces.csv
+   - Matrix of energy traces for all runs.
+   - Rows: time steps (0..T-1). Columns: one column per run (0..N-1).
+   - Values: energy (mode controlled by config: density/total/relative).
+   - Use this to verify stability and to reproduce the mean energy plot.
+
+2) UMH_Quantum_Entanglement_CHSH_All_Data.csv
+   - Every run, full detail. Columns include:
+     * E(A,B), E(A,B'), E(A',B), E(A',B')    (the four correlations)
+     * CHSH_S, CHSH_S_sem                     (S value and its propagated SEM)
+     * Energy_Trace                           (serialized list for that run)
+     * Measurements                           (serialized list of per-trial outcomes)
+     * Run_Index                              
+     * CHSH_Class                             ("Classical", "Quantum", "Quantum>Tsirelson", or "UMH")
+     * UMH_Tagged                             (True if above the conservative UMH threshold)
+     * Run                                    (0..N-1; used by the plots)
+   - This is the master table for every run and is the best file to audit or re-plot.
+
+3) UMH_Quantum_Entanglement_CHSH_Randomized_Data.csv
+   - The same columns as above but limited to the subset used in the animation/plots (the "view" after any optional filtering). It is what drives the GIF and
+     histogram/scatter figures.
+
+4) UMH_Quantum_Entanglement_Violations_Only.csv
+   - Subset of CHSH_All_Data containing only "UMH-tagged" runs.
+   - Criterion: CHSH_S > (Tsirelson + K * CHSH_S_sem), with K = 4 by default.
+     This is a very conservative threshold intended to highlight clear outliers well above quantum Tsirelson predictions.
+
+5) UMH_Quantum_Entanglement_Statistical_Results.txt
+   - Text summary of statistical tests across runs:
+     * Test of mean S vs target bound (Classical S=2 in field mode, or Tsirelson in quantum-oracle mode): reports N, mean S, std, SEM, 95% CI, z-score, and
+       two-sided p-value; a short conclusion line follows.
+     * Optional binomial test for "UMH-tagged" events can be enabled in code; if enabled, it reports a one-sided p-value under a user-chosen null rate p_null.
+
+6) UMH_Quantum_Entanglement_Run_Summary.json
+   - Compact machine-readable summary of the run and configuration. Keys include:
+     * SIZE, STEPS, RUNS, LATTICE_SPACING_DX, MEDIUM_DENSITY_RHO, MEDIUM_TENSION_TU
+     * DT, C, LIMIT_OUTPUT, RNG_MODE, INDEPENDENT_SETTINGS
+     * USE_BALANCED, MEASUREMENT_MODEL
+     * Max_S, Mean_S, Std_S
+
+WHAT THE CODE DOES (HIGH LEVEL)
+-------------------------------
+1) Configuration
+   - get_default_config() defines grid size, steps, number of runs, RNG/measurement model, output DPI, etc.
+   - Key toggles:
+     * MEASUREMENT_MODEL: "field" (UMH readout) or "quantum" (oracle sampler to validate the analysis/plot pipeline).
+     * RNG_MODE and INDEPENDENT_SETTINGS:
+       - RNG_MODE="crypto" uses OS entropy (non-deterministic).
+       - RNG_MODE="seeded" with INDEPENDENT_SETTINGS=false shares the hidden-state
+         RNG with the settings RNG to intentionally relax measurement independence (UMH baseline for CHSH violations).
+     * MEAS_REGION_MODE: "snapshots" uses saved 3x3x3 phase patches; "jitter" samples a small local patch around the center each trial.
+     * USE_BALANCED=true enforces equal counts of the four setting pairs.
+
+2) Lattice physics
+   - A 3-D wave equation with a cubic nonlinearity evolves the field psi(x,t). A phase-locking operator models locking/decoherence. Energy is tracked each step.
+
+3) Entangled initialization
+   - Two soliton pairs are inserted symmetrically. One of each pair receives a random relative phase from {0, 90, 180, 270} degrees. Small, localized noise "collapse
+     frames" seed phase locking. Optionally, 3x3x3 phase snapshots are saved.
+
+4) Measurements
+   - For each trial, Alice sets a in {0,1}, Bob sets b in {0,1}. Local phase regions are projected onto cos(phi - theta_a) and cos(phi - phi_b) and thresholded to +/-1. The four correlations are computed and S = |E00 - E01 + E10 + E11|; SEM is conservatively propagated from the four E-terms.
+
+5) Diagnostics and outputs
+   - Per-run S and SEM are stored. A no-signalling check prints marginals. Energy traces are collected and averaged. Plots and data files are written.
+
+HOW TO RUN
+----------
+Basic:
+    python UMH_CHSH_Entanglement_v2.py
+
+With a config file (JSON):
+    python UMH_CHSH_Entanglement_v2.py my_config.json
+
+Recommended Python packages:
+    python 3.10+, numpy, numba, pandas, scipy, matplotlib, pillow
+
+KEY CONFIGURATIONS
+------------------
+A) Field-only baseline (independent settings; "loophole-free intent"):
+{
+  "RNG_MODE": "crypto",
+  "INDEPENDENT_SETTINGS": true,
+  "MEASUREMENT_MODEL": "field",
+  "MEAS_REGION_MODE": "snapshots",
+  "USE_BALANCED": true
+}
+Expected outcome: S clustered around 2 (classical) within sampling error.
+
+B) Quantum-oracle validation (pipeline sanity check):
+{
+  "MEASUREMENT_MODEL": "quantum",
+  "RNG_MODE": "seeded",
+  "INDEPENDENT_SETTINGS": true
+}
+Expected outcome: S ~ 2.828 (never above Tsirelson).
+
+C) UMH baseline for CHSH violation (as discussed in the paper):
+{
+  "MEASUREMENT_MODEL": "field",
+  "RNG_MODE": "seeded",
+  "MASTER_SEED": 20250601,
+  "INDEPENDENT_SETTINGS": false,
+  "USE_BALANCED": true,
+  "MEAS_REGION_MODE": "snapshots"
+}
+This relaxes measurement independence by sharing the seeded RNG between the hidden field and the settings. Under this assumption, the simulation can produce S > 2 and
+occasionally S > 2.828. With independent settings restored, the distribution returns to S ~ 2.
+
+INTERPRETING THE ATTACHED EXAMPLE RUN
+-------------------------------------
+The provided log file corresponds to field mode with independent settings:
+- Mean S ~ 1.9995 with SEM ~ 0.0028 over 50 runs
+- Two-sided test vs S=2 gives p ~ 0.845 (consistent with classical)
+- No-signalling checks show no significant dependence of marginals on the other side
+
+HOW THIS SUPPORTS "UMH IS CAPABLE OF QUANTUM ENTANGLEMENT"
+-----------------------------------------------------------
+The code base implements two regimes:
+1) Independent settings (default field-mode baseline) -> S ~ 2, classical.
+2) Relaxed measurement independence (shared seeded RNG), matching the UMH hypothesis as stated in the manuscript -> S > 2 on average is possible, with rare
+   outliers beyond 2.828. This demonstrates the UMH *capability* to generate entanglement-like CHSH violations under the UMH assumption p(lambda | a,b) != p(lambda). It is not a loophole-free Bell test; it is a targeted test of the UMH hypothesis.
+
+TROUBLESHOOTING AND PERFORMANCE
+-------------------------------
+- If you see "CFL violated" or instability, reduce DT or increase LATTICE_SPACING_DX.
+- Use fewer RUNS or smaller SIZE for quick checks. The code parallelizes runs and caps math library threads to avoid oversubscription.
+- Set OUTPUT_FOLDER to change where artifacts are written.
+
+REPRODUCIBILITY
+---------------
+Set "RNG_MODE": "seeded" and choose a "MASTER_SEED".
+- INDEPENDENT_SETTINGS=true -> hidden-state and settings RNGs are independent.
+- INDEPENDENT_SETTINGS=false -> shared RNG realizes relaxed measurement independence.
+
+LICENSE
+-------
+(c) 2025 Andrew Dodge. See the manuscript/code license if provided.

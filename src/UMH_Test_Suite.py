@@ -392,16 +392,16 @@ def supernova():
         overrides = {}
 
         run_core_step_if_needed(
-            module_path="Modules.PantheonData.Pantheon_Downloader",
-            output_file_path="PantheonData/lcparam_full_long.csv",
-            log_file_path="PantheonData_Output.log",
+            module_path="Modules.PantheonData.PantheonPlus_Downloader",
+            output_file_path="PantheonData/PantheonPlus_SH0ES.dat",
+            log_file_path="PantheonPlusData_Output.log",
             overrides=overrides
         )
 
         run_core_step_if_needed(
-            module_path="Modules.UMH_vs_Pantheon.UMH_vs_Pantheon",
-            output_file_path="UMH_vs_Pantheon/UMH_vs_Pantheon_Pantheon_Supernovae.png",
-            log_file_path="UMH_vs_Pantheon_Output.log",
+            module_path="Modules.UMH_vs_Pantheon.UMH_vs_PantheonPlus",
+            output_file_path="UMH_vs_Pantheon/UMH_vs_PantheonPlus_Supernovae.png",
+            log_file_path="UMH_vs_PantheonPlus_Output.log",
             overrides=overrides
         )
 
@@ -439,9 +439,16 @@ def redshift():
         overrides = {}
 
         run_core_step_if_needed(
-            module_path="Modules.UMH_RedShift.UMH_RedShift",
-            output_file_path="UMH_RedShift/UMH_RedShift_Redshift.png",
-            log_file_path="UMH_RedShift_Output.log",
+            module_path="Modules.PantheonData.PantheonPlus_Downloader",
+            output_file_path="PantheonData/PantheonPlus_SH0ES.dat",
+            log_file_path="PantheonPlusData_Output.log",
+            overrides=overrides
+        )
+
+        run_core_step_if_needed(
+            module_path="Modules.UMH_RedShift.UMH_RedShiftPlus",
+            output_file_path="UMH_RedShift/UMH_RedShift_Time_Stretch.png",
+            log_file_path="UMH_RedShiftPlus_Output.log",
             overrides=overrides
         )
 
@@ -640,9 +647,9 @@ def get_prerequisites():
         )
 
         run_core_step_if_needed(
-            module_path="Modules.PantheonData.Pantheon_Downloader",
-            output_file_path="PantheonData/lcparam_full_long.csv",
-            log_file_path="PantheonData_Output.log",
+            module_path="Modules.PantheonData.PantheonPlus_Downloader",
+            output_file_path="PantheonData/PantheonPlus_SH0ES.dat",
+            log_file_path="PantheonPlusData_Output.log",
             overrides=overrides
         )
 
@@ -696,7 +703,7 @@ menu_sections = {
         (6, "Einstein Tensor Validation", tensor_validation),
         (7, "Multibody Gravitational Wave Test", multibody_wave),
         (8, "CMB Angular Power, Angular, BAO", cmb_validation),
-        (9, "Pantheon Supernova Validation", supernova),
+        (9, "Pantheon+ Supernova Validation", supernova),
         (10, "Hubble Redshift Without Expansion", redshift),
     ],
     "Gauge Symmetries and Field Dynamics": [
