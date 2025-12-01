@@ -1,20 +1,20 @@
-""" 
-UMH vs Pantheon Test
+"""
+UMH_vs_PantheonPlus.py  (UMH vs Pantheon Test)
+
+Pantheon+ Hubble-diagram comparison of UMH (non-expansion) vs flat ΛCDM.
 
 Author: Andrew Dodge
 Date: July 2025
 
-Description:
-Tests whether UMH can account for Pantheon Data
+Implements the analysis described in:
+  A. Dodge, "Pantheon+ and Redshift Validation of the Ultronic Medium Hypothesis (UMH)",
+  July 2025, and Appendix A.2.7–A.2.8 of "The Ultronic Medium Hypothesis (UMH)".
 
-Parameters:
-    - grid_size
-    - dx
-    - dt
-    - frequencies to test
-
-Output:
-    - 
+Key features:
+  - Uses Pantheon+ SN-only sample (N=1624) with full STAT+SYS covariance.
+  - One-time low-z calibration of α from Cepheid-anchored calibrators.
+  - UMH non-expansion μ(z) with theory-fixed (α, β1, β2), profiling only M.
+  - Flat ΛCDM reference fit with free Ωm and profiled M.
 """
 
 import numpy as np
@@ -40,7 +40,6 @@ from mpmath import gammainc, gamma
 from scipy.stats import binned_statistic
 
 from scipy.optimize import brentq  # for inverting z(d) -> d(z)
-from scipy.optimize import minimize
 
 
 def get_default_config():
@@ -66,11 +65,12 @@ def get_default_config():
 
 def run(config_overrides=None):
     config = get_default_config()
-    if config_overrides:
-        config.update(config_overrides)
-
+    if config_overrides: config.update(config_overrides)
+    
+    #c = 299792.458  # speed of light in km/s
     c=config["LIGHT_SPEED"]
-
+    
+    #H0 = 70  # Hubble constant in km/s/Mpc
     H0=config["H0"]
 
     columns=config["PANTHEON_DATA_COLUMNS"]
@@ -95,10 +95,6 @@ def run(config_overrides=None):
     file_path=os.path.join(outdir, file_hdr)
 
     print(f"{title} Files Will be Saved to {outdir}.")
-
-    # UMH Model Parameters
-    #H0 = 70  # Hubble constant in km/s/Mpc
-    #c = 299792.458  # speed of light in km/s
 
     # UMH Settings
     # low-z UMH calibration from calibrators (SH0ES/ceph) ----
@@ -153,7 +149,6 @@ def run(config_overrides=None):
 
     # ----------------- UMH (non-expansion) MODEL + χ² WITH PROFILED M -----------------
 
-
     
     def z_of_d_umh(d, a, s=0.0, b=0.0, c_=0.0, d0=1.0):
         d = float(d)
@@ -164,7 +159,6 @@ def run(config_overrides=None):
         if x > 700.0: return np.inf
         if x < -50.0: return 0.0
         return np.expm1(x)
-
 
 
     # --- Invert z(d) -> d(z) robustly ------------------------------------------
@@ -240,9 +234,6 @@ def run(config_overrides=None):
         return brentq(f, lo, hi, xtol=1e-10, maxiter=200)
 
 
-
-
-
     # --- Distance modulus for UMH non-expansion family ---------------------------
     def mu_umh_of_z_nonexp(z_array, a, s=0.0, b=0.0, c_=0.0, d0=1.0, delta=1.0, kappa=1.0, T_of_z=None):
         """
@@ -259,8 +250,7 @@ def run(config_overrides=None):
 
         # Analytic inversion for the pure "one-parameter" law: s=0, b=0, c=0.
         if np.isclose(s, 0.0, atol=1e-12) and b == 0.0 and c_ == 0.0:
-            if a <= 0.0:
-                raise RuntimeError("UMH: a must be > 0 for the pure s=0, b=c=0 case.")
+            if a <= 0.0: raise RuntimeError("UMH: a must be > 0 for the pure s=0, b=c=0 case.")
             d_vals = np.log1p(z_array) / a
         else:
             # General case: invert with the robust bracket+brent used elsewhere
@@ -268,13 +258,11 @@ def run(config_overrides=None):
 
         # --- vectorized transmission + luminosity distance ---
         Tvals = np.asarray(T_of_z(z_array))
-        if Tvals.ndim == 0:                      # allow scalar-returning T_of_z
-            Tvals = np.full_like(z_array, Tvals, dtype=float)
+        if Tvals.ndim == 0: Tvals = np.full_like(z_array, Tvals, dtype=float)   # allow scalar-returning T_of_z
 
         D_L = (kappa * d_vals) * (1.0 + z_array)**((1.0 + delta)/2.0) / np.sqrt(Tvals)
 
         return 5.0*np.log10(D_L) + 25.0
-
 
 
     def chi2_and_M_best(data_vec, model_mu, C):
@@ -317,8 +305,6 @@ def run(config_overrides=None):
         print(f"  p_loss per interaction = {p_loss:.3e}")
         print(f"  d p_loss / dL          = {dpdL:.3e}")
         print(f"  dτ/dd = a*β1 = {alpha_eff:.3e} 1/Mpc  → mean free path ≈ {mfp:.1f} Mpc")
-
-
 
 
     def lowz_alpha_from_calibrators(
@@ -371,15 +357,11 @@ def run(config_overrides=None):
             sig_d_mu = d_mu * (np.log(10.0)/5.0) * sig_mu
             # guard against zeros
             sig_d_mu = np.maximum(sig_d_mu, 1e-3)
-        else:
-            # if no μ errors available, assign a conservative 8% distance error
-            sig_d_mu = np.maximum(0.08 * d_mu, 1e-3)
-
+        else: sig_d_mu = np.maximum(0.08 * d_mu, 1e-3) # if no μ errors available, assign a conservative 8% distance error
+            
         # Cepheid-only distances
-        if drop_ceph_if_mu:
-            use_ceph = has_ceph & (~has_mu)
-        else:
-            use_ceph = has_ceph
+        if drop_ceph_if_mu: use_ceph = has_ceph & (~has_mu)
+        else: use_ceph = has_ceph
 
         d_ceph = df.loc[use_ceph, ceph_col].to_numpy()
         # inflate CEPH-only uncertainties (systematics + inhomogeneity)
@@ -419,10 +401,8 @@ def run(config_overrides=None):
             ATA = Aw.T @ Aw                   # (k×k)
             ATy = Aw.T @ yw                   # (k,)
 
-            try:
-                cov = np.linalg.inv(ATA)
-            except np.linalg.LinAlgError:
-                cov = np.linalg.pinv(ATA)
+            try: cov = np.linalg.inv(ATA)
+            except np.linalg.LinAlgError: cov = np.linalg.pinv(ATA)
 
             theta = cov @ ATy
             res = y - A @ theta
@@ -431,8 +411,7 @@ def run(config_overrides=None):
             cov_scaled = cov * (chi2 / dof)
             return theta, cov_scaled, chi2, res
 
-        if not use_robust:
-            theta, cov, chi2, res = solve_WLS(A, d, w_meas)
+        if not use_robust: theta, cov, chi2, res = solve_WLS(A, d, w_meas)
         else:
             # Huber IRLS
             theta = None
@@ -452,8 +431,7 @@ def run(config_overrides=None):
                     break
 
         # --------------- unpack & convert to alpha ---------------
-        if force_through_zero:
-            c1 = float(theta[0]); var_c1 = float(cov[0,0])
+        if force_through_zero: c1 = float(theta[0]); var_c1 = float(cov[0,0])
         else:
             c0 = float(theta[0])
             c1 = float(theta[1]); var_c1 = float(cov[1,1])
@@ -465,21 +443,16 @@ def run(config_overrides=None):
         print(f"[low-z α] Using {d.size} calibrators (z≤{zmax}): N_μ={n_mu}, N_CEPH={n_ceph}, "
               f"{'robust' if use_robust else 'WLS'}, "
               f"{'no-intercept' if force_through_zero else 'with-intercept'}")
-        if not force_through_zero:
-            print(f"[low-z α] c0={c0:.3f} Mpc, c1={c1:.6e} 1,  χ²={chi2:.2f}")
-        else:
-            print(f"[low-z α] c1={c1:.6e} 1,  χ²={chi2:.2f}")
+        if not force_through_zero: print(f"[low-z α] c0={c0:.3f} Mpc, c1={c1:.6e} 1,  χ²={chi2:.2f}")
+        else: print(f"[low-z α] c1={c1:.6e} 1,  χ²={chi2:.2f}")
         print(f"[low-z α] α (=a) = {alpha:.6e} ± {sig_alpha:.6e} 1/Mpc")
 
-        summary = dict(
-            n_total=int(d.size), n_mu=int(n_mu), n_ceph=int(n_ceph),
+        summary = dict( n_total=int(d.size), n_mu=int(n_mu), n_ceph=int(n_ceph),
             robust=bool(use_robust), force_zero=bool(force_through_zero),
-            c1=c1, alpha=alpha, sigma_alpha=sig_alpha, chi2=chi2
-        )
-        if not force_through_zero:
-            summary["c0"] = c0
-        return alpha, sig_alpha, summary
+            c1=c1, alpha=alpha, sigma_alpha=sig_alpha, chi2=chi2)
 
+        if not force_through_zero: summary["c0"] = c0
+        return alpha, sig_alpha, summary
 
 
     # ---------- UMH (non-exp) Perform Calibration on Data ----------
@@ -500,11 +473,11 @@ def run(config_overrides=None):
         else:
             A_NATIVE = H0 / config["LIGHT_SPEED"]        # ≈ H0/c in 1/Mpc
             print(f"[Calculated α] A_NATIVE={A_NATIVE} 1/Mpc")
-            # A_NATIVE = 2.2118e-4                  # 1/Mpc from your low-z calibration (ln(1+z) ≈ α d), see UMH_Compressed A.2.8
+            # A_NATIVE = 2.2118e-4                  # 1/Mpc from low-z calibration (ln(1+z) ≈ α d), see UMH_Compressed A.2.8
     else:
         A_NATIVE = H0 / config["LIGHT_SPEED"]        # ≈ H0/c in 1/Mpc
         print(f"[Calculated α] A_NATIVE={A_NATIVE} 1/Mpc")
-        # A_NATIVE = 2.2118e-4                  # 1/Mpc from your low-z calibration (ln(1+z) ≈ α d), see UMH_Compressed A.2.8
+        # A_NATIVE = 2.2118e-4                  # 1/Mpc from low-z calibration (ln(1+z) ≈ α d), see UMH_Compressed A.2.8
 
     # ---------- UMH (non-exp) Setup Defaults ----------
 
@@ -532,11 +505,10 @@ def run(config_overrides=None):
                     Csel = maybe_add_pv_floor(Csel, z, sigma_v=250.0)
                     err_plot = np.sqrt(np.diag(Csel))  # refresh plotting errors
                     print("[diag] Applied PV floor (σ_v=250 km/s) to Csel.")
-            else:
-                print("[diag] No z<0.02 calibrators → PV check skipped.")
-        except Exception as e:
-            print(f"[diag] PV-floor check skipped: {e}")
+            else: print("[diag] No z<0.02 calibrators → PV check skipped.")
+        except Exception as e: print(f"[diag] PV-floor check skipped: {e}")
     # ---------------------------------------------------------------
+
 
     def betas_from_residuals_GLS(z, mb_corr, mu_noatt, C, huber_c=1.35, max_iter=30):
         """
@@ -544,11 +516,16 @@ def run(config_overrides=None):
         Returns (β1, β2) with Δμ = 1.086*(β1 L + β2 L^2).
         """
         L = np.log1p(z)
-        # --- C-aware center of L: minimize ||L - L0||_C^{-1}
-        W = np.linalg.inv(C)
-        num = float(L @ (W @ np.ones_like(L)))
-        den = float(np.ones_like(L) @ (W @ np.ones_like(L)))
-        L0 = num / den  # weighted "mean" of L under C^{-1}
+
+        one = np.ones_like(L)
+        # Factor C once
+        cf = cho_factor(C, overwrite_a=False, check_finite=False)
+        # Compute C^{-1} 1  by solving C x = 1
+        Cinv_one = cho_solve(cf, one, check_finite=False)
+        # Now compute the weighted mean pieces
+        num = float(L @ Cinv_one)        # L^T C^{-1} 1
+        den = float(one @ Cinv_one)      # 1^T C^{-1} 1
+        L0  = num / den                  # weighted "mean" of L under C^{-1}
 
         Lc = L - L0
         A = np.vstack([np.ones_like(Lc), 1.086*Lc, 1.086*(Lc**2)]).T  # design in centered basis
@@ -563,10 +540,8 @@ def run(config_overrides=None):
         for _ in range(max_iter):
             sw = np.sqrt(w); Xw = X * sw[:, None]; yw = y * sw
             ATA = Xw.T @ Xw; ATy = Xw.T @ yw
-            try:
-                cov = np.linalg.inv(ATA)
-            except np.linalg.LinAlgError:
-                cov = np.linalg.pinv(ATA)
+            try: cov = np.linalg.inv(ATA)
+            except np.linalg.LinAlgError: cov = np.linalg.pinv(ATA)
             theta_new = cov @ ATy
             r = y - X @ theta_new
             s = max(1.4826 * np.median(np.abs(r - np.median(r))), 1e-6)
@@ -602,12 +577,11 @@ def run(config_overrides=None):
             if m.sum() < min_keep:   # skip if this holdout leaves too few SNe
                 continue
             b1, b2 = betas_from_residuals_GLS(
-                z[m], mb_corr[m], mu_noatt[m], C[np.ix_(m, m)], huber_c=huber_c
-            )
+                z[m], mb_corr[m], mu_noatt[m], C[np.ix_(m, m)], huber_c=huber_c)
+
             b1_list.append(b1); b2_list.append(b2)
 
-        if len(b1_list) >= 2:
-            return float(np.median(b1_list)), float(np.median(b2_list))
+        if len(b1_list) >= 2: return float(np.median(b1_list)), float(np.median(b2_list))
         # fallback: use all data
         return betas_from_residuals_GLS(z, mb_corr, mu_noatt, C, huber_c=huber_c)
 
@@ -626,7 +600,10 @@ def run(config_overrides=None):
             m,_ = np.linalg.lstsq(X, y, rcond=None)[0]
             print(f"c={c:.2f}  β1={b1:.4f}  β2={b2:.4f}  χ²={chi2:.1f}  GLS slope={m:.3f}")
 
-        #UMH_BETA1_THEORY, UMH_BETA2_THEORY = betas_from_residuals_GLS(z, mb_corr, mu_noatt, Csel, huber_c=1.345, max_iter=30)
+        # IMPORTANT:
+        # (A_NATIVE, UMH_BETA1_THEORY, UMH_BETA2_THEORY) are calibrated once
+        # and then held fixed. In the main Hubble fit, the only effectively free
+        # parameter is the profiled magnitude M (k=1 for UMH).
         UMH_BETA1_THEORY, UMH_BETA2_THEORY = betas_jackknife_idsurvey(ids_subset, z, mb_corr, mu_noatt, Csel, huber_c=2.0)
 
         print(f"From Data using Theory: β1={UMH_BETA1_THEORY:.4f}, β2={UMH_BETA2_THEORY:.4f}")
@@ -641,9 +618,11 @@ def run(config_overrides=None):
                        label="Planck")
 
 
+
     def fit_umh_theory_fixed():
         """
         Use theory-fixed (a, β1, β2), profile M, and return an 'inc'-shaped dict
+        This matches the "one-knob" UMH configuration described in the paper.
         """
         a = float(A_NATIVE)
         beta1, beta2 = float(UMH_BETA1_THEORY), float(UMH_BETA2_THEORY)
@@ -652,10 +631,13 @@ def run(config_overrides=None):
 
         mu = mu_umh_of_z_nonexp(z, a=a, s=0.0, b=0.0, c_=0.0, delta=delta_td, T_of_z=Tcall)
         chi2, M = chi2_and_M_best(mb_corr, mu, Csel)
+
+        # Model comparison: k_umh=1 (only M profiled), k_lcdm=2 (Ωm + M).
         print(f"[UMH theory-fixed] a={a:.9g}, β1={beta1:g}, β2={beta2:g} → χ² = {chi2:.1f}  (k = 1, counting profiled M)")
 
         # k = 1 because only M is effectively free/profled; (a, β's) are fixed by theory here
         return dict(name='umh_theory', a=a, b=0.0, s=0.0, tau0=None, chi2=chi2, M=M, mu=mu, k=1, beta1=beta1, beta2=beta2)
+
 
 
     # ---------- UMH (non-exp) Run fit_umh_theory_fixed ----------
@@ -676,8 +658,7 @@ def run(config_overrides=None):
     print(f"p(χ²≥obs) ≈ {p_large:.3f}")
 
     # ----------------- ΛCDM (fit Ωm the same way) -----------------
-    def H_LCDM(z, Om):
-        return H0 * np.sqrt(Om * (1.0 + z)**3 + (1.0 - Om))
+    def H_LCDM(z, Om): return H0 * np.sqrt(Om * (1.0 + z)**3 + (1.0 - Om))
 
     def d_L_LCDM(z, Om):
         integ, _ = quad(lambda zp: c / H_LCDM(zp, Om), 0.0, z)
@@ -707,7 +688,6 @@ def run(config_overrides=None):
         b_err = float(np.sqrt(cov[1, 1]))
         return m, b, m_err, b_err
 
-        
 
     # Residuals & basic plots for UMH (best-fit)
     residuals_umh_best = mb_corr - (mu_umh_best + M_umh_best)
@@ -737,8 +717,7 @@ def run(config_overrides=None):
     # GLS trend line on residuals vs z
     m_umh, b_umh, em_umh, eb_umh = slope_gls(z, residuals_umh_best, Csel)
     zz = np.linspace(float(z.min()), float(z.max()), 300)
-    plt.plot(zz, m_umh*zz + b_umh, '-', lw=2,
-             label=f'GLS trend: m={m_umh:.3f}±{em_umh:.3f}')
+    plt.plot(zz, m_umh*zz + b_umh, '-', lw=2, label=f'GLS trend: m={m_umh:.3f}±{em_umh:.3f}')
     plt.legend()
 
     plt.savefig(f"{file_path}_Residuals.png", dpi=dpi); plt.close()
@@ -770,8 +749,6 @@ def run(config_overrides=None):
     plt.tight_layout()
     plt.savefig(f"{file_path}_Binned_Residuals.png", dpi=dpi)
     plt.close()
-
-
 
 
 
@@ -815,8 +792,8 @@ def run(config_overrides=None):
     plt.title(f'{title}: Residuals (best fits)')
     plt.legend(); plt.grid(True); plt.tight_layout()
 
-    # GLS trend lines for both models (vs z)
 
+    # GLS trend lines for both models (vs z)
     m_lcdm, b_lcdm, em_lcdm, eb_lcdm = slope_gls(z, residuals_lcdm_best, Csel)
 
     zz = np.linspace(float(z.min()), float(z.max()), 300)
@@ -834,6 +811,7 @@ def run(config_overrides=None):
     plt.legend(); plt.tight_layout()
     plt.savefig(f"{file_path}_WhitenedResiduals.png", dpi=dpi)
     plt.close()
+
 
     # --- Optional: zoom inset on high-z residuals (z > 1.5) ---
     fig, ax = plt.subplots(figsize=(10,6), constrained_layout=True)
@@ -855,6 +833,7 @@ def run(config_overrides=None):
     plt.savefig(f"{file_path}_vs_LCDM_Residuals_Zoom.png", dpi=dpi)
     plt.close()
 
+
     # --- Annotated overlay with survey-region shading (best fits) ---
     plt.figure(figsize=(10, 6))
     plt.errorbar(z, mb_corr, yerr=err_plot, fmt='o', ms=3, label='Pantheon+ (m_b_corr)', alpha=0.6)
@@ -866,8 +845,7 @@ def run(config_overrides=None):
     #plt.plot(z, mu_umh_best  + M_umh_best,  'r-',  label=f'UMH non-exp (a*={a_best:.3g})')
     plt.plot(z, mu_lcdm_best + M_l_best,    'g--', label=f'ΛCDM (Ωm*={Om_best:.3f})')
     regions = [(0.01, 0.10, 'Low-z'), (0.10, 0.40, 'SDSS'), (0.40, 1.00, 'SNLS'), (1.00, 2.30, 'HST')]
-    for zmin, zmax, _lab in regions:
-        plt.axvspan(zmin, zmax, alpha=0.08, zorder=0)
+    for zmin, zmax, _lab in regions: plt.axvspan(zmin, zmax, alpha=0.08, zorder=0)
     region_handles = [Patch(alpha=0.08, label=lab) for _, _, lab in regions]
     handles, labels = plt.gca().get_legend_handles_labels()
     handles += region_handles; labels += [lab for _, _, lab in regions]
@@ -887,7 +865,6 @@ def run(config_overrides=None):
 
     print(f"GLS slope: UMH={m_umh:.3f}±{em_umh:.3f} (b={b_umh:.3f}±{eb_umh:.3f}), "
           f"ΛCDM={m_lcdm:.3f}±{em_lcdm:.3f} (b={b_lcdm:.3f}±{eb_lcdm:.3f})")
-
 
 
     # --- Model comparison: AIC/BIC for best-fits ---
@@ -910,8 +887,7 @@ def run(config_overrides=None):
     plt.figure(figsize=(10,4))
     plt.errorbar(x, residuals_umh_best, yerr=err_plot, fmt='.')
     xx = np.linspace(float(x.min()), float(x.max()), 300)
-    plt.plot(xx, mx*xx + bx, '-', lw=2,
-             label=f'GLS trend: m={mx:.3f}±{emx:.3f}')
+    plt.plot(xx, mx*xx + bx, '-', lw=2, label=f'GLS trend: m={mx:.3f}±{emx:.3f}')
     plt.axhline(0, color='k', linestyle='--')
     plt.xlabel('x = ln(1+z)'); plt.ylabel('Residuals (data − model)')
     plt.title(f"{title}: Residuals vs ln(1+z) (UMH non-exp)")
@@ -921,8 +897,6 @@ def run(config_overrides=None):
 
     print(f"GLS slope in x=ln(1+z): m={mx:.3f}±{emx:.3f}  "
           f"(compare to vs z: {m_umh:.3f}±{em_umh:.3f})")
-
-
 
 
     print(f"✅ Finished Test: {title} Validation.")

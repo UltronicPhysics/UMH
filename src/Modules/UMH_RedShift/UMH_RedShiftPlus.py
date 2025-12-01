@@ -1,18 +1,19 @@
-""" 
-UMH RedShift Test
+"""
+UMH_RedShiftPlus.py (UMH RedShift Test)
+
+RedShift under Ultronic Medium
 
 Author: Andrew Dodge
 Date: July 2025
 
+Implements the low-z calibration and Pantheon+ redshift/time-dilation
+analysis described in:
+  A. Dodge, "Pantheon+ and Redshift Validation of the Ultronic Medium Hypothesis (UMH)", 2025.
+
 Description:
-Tests whether a RedShift under Ultronic Medium can occur without Universe expansion.
-
-Parameters:
-    - Redshift_z
-    - Distance_Mpc
-
-Output:
-    - UMH_RedShift.png
+  Tests whether a RedShift under Ultronic Medium can occur without Universe expansion.
+  Performs low-z calibration of the UMH redshift law and Pantheon+ redshift/time-dilation tests
+  under the non-expansion UMH framework.
 """
 
 import numpy as np
@@ -27,26 +28,12 @@ import pandas as pd
 import matplotlib
 matplotlib.use("Agg")  
 import matplotlib.pyplot as plt
-from matplotlib.patches import Patch
 
 from scipy.optimize import brentq
 from scipy.linalg import cho_factor, cho_solve
 
-
-import statsmodels.api as sm
-
-from scipy.stats import linregress
-from scipy.fft import rfft, rfftfreq
-from scipy.optimize import curve_fit
-from scipy.stats import t
-
 from scipy.stats import skew, kurtosis
 
-try:
-    from statsmodels.nonparametric.smoothers_lowess import lowess
-    HAVE_LOWESS = True
-except Exception:
-    HAVE_LOWESS = False
 
 
 def get_default_config():
@@ -56,7 +43,7 @@ def get_default_config():
 
         "LIGHT_SPEED": 299792.458,  # speed of light in km/s
 
-        "USE_HUBBER": True,
+        "USE_HUBER": True,
 
         "VPEC": 200, # km/s
 
@@ -93,6 +80,7 @@ def solve_wls(A, y, w):
     s2 = chi2 / dof
     cov = np.linalg.pinv(ATA) * s2
     return theta, cov, res, chi2, dof
+
 
 def fit_alpha_huber(d, L, w_meas, huber_c=2.0, force_through_zero=False, max_iter=50):
     """
@@ -159,6 +147,11 @@ def fit_alpha_huber(d, L, w_meas, huber_c=2.0, force_through_zero=False, max_ite
         "N": int(d.size),
     }
 
+    if not force_through_zero and cov is not None and cov.shape == (2, 2):
+        info["cov_c00"] = float(cov[0, 0])
+        info["cov_c01"] = float(cov[0, 1])
+        info["cov_c11"] = float(cov[1, 1])
+
     return a_hat, c0, sigma_a, info
 
 
@@ -217,8 +210,7 @@ def fit_alpha_weighted(d_Mpc, ln1pz, z, sigma_L,
     x = np.asarray(d_Mpc[m], float)
     y = np.asarray(ln1pz[m], float)
     s = np.asarray(sigma_L[m], float)
-    if x.size < 8:
-        raise ValueError(f"Too few low-z points (z<= {zmax}); got N={x.size}.")
+    if x.size < 8: raise ValueError(f"Too few low-z points (z<= {zmax}); got N={x.size}.")
 
     w = 1.0/np.maximum(s*s, 1e-30)
 
@@ -287,8 +279,9 @@ def fit_alpha_weighted(d_Mpc, ln1pz, z, sigma_L,
     }
     return float(a), float(b), float(np.sqrt(max(var_a,0.0))), info
 
+
 # -------------------------------------------------------------
-# (B) UMH redshift law, inversion, and μ(z) under non-expansion
+# UMH redshift law, inversion, and μ(z) under non-expansion
 # -------------------------------------------------------------
 def z_of_d_umh(d, a, s=0.0, b=0.0, c_=0.0, d0=1.0):
     """
@@ -306,26 +299,24 @@ def z_of_d_umh(d, a, s=0.0, b=0.0, c_=0.0, d0=1.0):
         return 0.0
     return np.expm1(x)
 
+
 def d_of_z_umh(z_target, a, s=0.0, b=0.0, c_=0.0, d0=1.0, d_init=1.0, d_max=1e9, max_doublings=100):
     """
     Robust scalar inversion of z(d) for general (a,b,c,s).
     """
     zt = float(z_target)
-    if zt <= 0.0:
-        return 0.0
+    if zt <= 0.0: return 0.0
     L = float(np.log1p(zt))
 
     # Analytic inversion for pure a (s=b=c=0)
     if abs(s) < 1e-12 and b == 0.0 and c_ == 0.0:
-        if a <= 0.0:
-            raise RuntimeError("UMH: a must be > 0 for s=b=c=0.")
+        if a <= 0.0: raise RuntimeError("UMH: a must be > 0 for s=b=c=0.")
         return L / a
 
     # Guard: finite z ceiling for some parameter combos
     if b <= 0.0 and s > 0.0:
         z_inf = np.exp(a/s) - 1.0
-        if zt >= 0.999*z_inf:
-            raise RuntimeError(f"UMH: requested z={zt:.3g} exceeds model's max z≈{z_inf:.3g}.")
+        if zt >= 0.999*z_inf: raise RuntimeError(f"UMH: requested z={zt:.3g} exceeds model's max z≈{z_inf:.3g}.")
 
     def f(d): return z_of_d_umh(d, a=a, s=s, b=b, c_=c_, d0=d0) - zt
 
@@ -336,10 +327,8 @@ def d_of_z_umh(z_target, a, s=0.0, b=0.0, c_=0.0, d0=1.0, d_init=1.0, d_max=1e9,
         if c_ > 0.0: hi_candidates.append(d0*np.expm1(L / c_))
         hi = float(max(hi_candidates)); lo = 0.0
         n = 0
-        while f(hi) <= 0.0 and hi < d_max and n < max_doublings:
-            hi *= 2.0; n += 1
-        if f(hi) <= 0.0:
-            raise RuntimeError("UMH: could not bracket d(z) with s≈0.")
+        while f(hi) <= 0.0 and hi < d_max and n < max_doublings: hi *= 2.0; n += 1
+        if f(hi) <= 0.0: raise RuntimeError("UMH: could not bracket d(z) with s≈0.")
         return brentq(f, lo, hi, xtol=1e-10, maxiter=200)
 
     # General s != 0
@@ -355,8 +344,7 @@ def d_of_z_umh(z_target, a, s=0.0, b=0.0, c_=0.0, d0=1.0, d_init=1.0, d_max=1e9,
         fhi = f(hi); n += 1
     if d_pole is not None and hi >= 0.99*d_pole and f(hi) <= 0.0:
         raise RuntimeError("UMH: could not bracket d(z) without crossing the s<0 pole.")
-    if fhi <= 0.0:
-        raise RuntimeError("UMH: could not bracket d(z).")
+    if fhi <= 0.0: raise RuntimeError("UMH: could not bracket d(z).")
 
     return brentq(f, lo, hi, xtol=1e-10, maxiter=200)
 
@@ -367,22 +355,18 @@ def mu_umh_of_z_nonexp(z_array, a, s=0.0, b=0.0, c_=0.0, d0=1.0, delta=1.0, kapp
       - D_L = (kappa * d) * (1+z)^((1+delta)/2) / sqrt(T(z))
       - μ = 5*log10(D_L) + 25
     """
-    if T_of_z is None:
-        T_of_z = lambda z: np.ones_like(np.asarray(z, float), float)
+    if T_of_z is None: T_of_z = lambda z: np.ones_like(np.asarray(z, float), float)
 
     z_array = np.asarray(z_array, float)
 
     # Vectorized inversion
     if abs(s) < 1e-12 and b == 0.0 and c_ == 0.0:
-        if a <= 0.0:
-            raise RuntimeError("UMH: a must be > 0 for the pure (a) law.")
+        if a <= 0.0: raise RuntimeError("UMH: a must be > 0 for the pure (a) law.")
         d_vals = np.log1p(z_array) / a
-    else:
-        d_vals = np.array([d_of_z_umh(zi, a=a, s=s, b=b, c_=c_, d0=d0) for zi in z_array])
+    else: d_vals = np.array([d_of_z_umh(zi, a=a, s=s, b=b, c_=c_, d0=d0) for zi in z_array])
 
     Tvals = np.asarray(T_of_z(z_array))
-    if Tvals.ndim == 0:
-        Tvals = np.full_like(z_array, Tvals, dtype=float)
+    if Tvals.ndim == 0: Tvals = np.full_like(z_array, Tvals, dtype=float)
 
     D_L = (kappa * d_vals) * (1.0 + z_array)**((1.0 + delta)/2.0) / np.sqrt(Tvals)
     return 5.0*np.log10(D_L) + 25.0
@@ -412,10 +396,8 @@ def make_Texp(beta1, beta2=0.0):
 
 def mu0_umh_nonexp(z, a, s=0.0, b=0.0, c_=0.0, d0=1.0, kappa=1.0):
     z = np.asarray(z, float)
-    if abs(s) < 1e-12 and b == 0.0 and c_ == 0.0:
-        d_vals = np.log1p(z) / a
-    else:
-        d_vals = np.array([d_of_z_umh(zi, a=a, s=s, b=b, c_=c_, d0=d0) for zi in z])
+    if abs(s) < 1e-12 and b == 0.0 and c_ == 0.0: d_vals = np.log1p(z) / a
+    else: d_vals = np.array([d_of_z_umh(zi, a=a, s=s, b=b, c_=c_, d0=d0) for zi in z])
     return 5.0*np.log10(kappa*d_vals) + 2.5*np.log10(1.0+z)
 
 
@@ -446,7 +428,6 @@ def fit_M_gamma_beta2(z, mb_corr, C, a, s=0.0, b=0.0, c_=0.0, d0=1.0, kappa=1.0)
     XtCinvR = X.T @ CinvRhs
 
     pars = np.linalg.solve(XtCinvX, XtCinvR)   # [M, gamma, beta2]
-    #cov  = np.linalg.inv(XtCinvX)
 
     mu   = mu0 + X @ pars
     res  = rhs - X @ pars
@@ -463,8 +444,8 @@ def fit_M_gamma_beta2(z, mb_corr, C, a, s=0.0, b=0.0, c_=0.0, d0=1.0, kappa=1.0)
         M=float(pars[0]), gamma=float(pars[1]), beta2=float(pars[2]),
         M_err=s(cov[0,0]), gamma_err=s(cov[1,1]), beta2_err=s(cov[2,2]),
         chi2=float(chi2), dof=int(dof),
-        mu_model=mu, mu0=mu0, A=A, B2=B2
-    )
+        mu_model=mu, mu0=mu0, A=A, B2=B2)
+
     return out
 
 def fit_M_beta_given_delta(z, mb_corr, C, delta_fixed, a, s=0.0, b=0.0, c_=0.0, d0=1.0, kappa=1.0):
@@ -488,7 +469,6 @@ def fit_M_beta_given_delta(z, mb_corr, C, delta_fixed, a, s=0.0, b=0.0, c_=0.0, 
     XtCinvX = X.T @ CinvX
     XtCinvR = X.T @ CinvR
     pars = np.linalg.solve(XtCinvX, XtCinvR)      # [M, β1, β2]
-    #cov  = np.linalg.inv(XtCinvX)
 
     mu  = mu0 + X @ pars
     res = y - mu
@@ -498,39 +478,24 @@ def fit_M_beta_given_delta(z, mb_corr, C, delta_fixed, a, s=0.0, b=0.0, c_=0.0, 
     cov  = np.linalg.inv(XtCinvX)
     cov *= (chi2 / dof)   # optional, conservative
 
-    return dict(
-        M=float(pars[0]),
+    return dict(M=float(pars[0]),
         beta1=float(pars[1]), beta2=float(pars[2]),
         M_err=float(np.sqrt(max(cov[0,0],0.0))),
         beta1_err=float(np.sqrt(max(cov[1,1],0.0))),
         beta2_err=float(np.sqrt(max(cov[2,2],0.0))),
-        chi2=chi2, dof=dof, mu_model=mu
-    )
-
-def solve_WLS(A, y, w):
-    sw = np.sqrt(w)
-    Aw = A * sw[:,None]
-    yw = y * sw
-    ATA = Aw.T @ Aw
-    ATy = Aw.T @ yw
-    cov = np.linalg.pinv(ATA)
-    theta = cov @ ATy
-    res = y - A @ theta
-    dof = max(len(y) - A.shape[1], 1)
-    chi2 = float(np.sum(w * res**2))
-    cov *= (chi2 / dof)  # conservative scale
-    return theta, cov
+        chi2=chi2, dof=dof, mu_model=mu)
 
 
 def run(config_overrides=None):
     config = get_default_config()
-    if config_overrides:
-        config.update(config_overrides)
-
+    if config_overrides: config.update(config_overrides)
+    
+    #c = 299792.458  # speed of light in km/s
     c_kms=config["LIGHT_SPEED"]
 
     vpec_kms=config["VPEC"]
-
+    
+    #H0 = 70  # Hubble constant in km/s/Mpc
     H0=config["H0"]
 
     columns=config["PANTHEON_DATA_COLUMNS"]
@@ -540,7 +505,7 @@ def run(config_overrides=None):
 
     GENERATE_UMH_SIMULATION_CALIBRATION=config["GENERATE_UMH_SIMULATION_CALIBRATION"]
 
-    USE_HUBBER=config.get("USE_HUBBER",True)
+    USE_HUBER=config.get("USE_HUBER",True)
 
     dpi=config["DPI"]
 
@@ -559,26 +524,22 @@ def run(config_overrides=None):
     file_path=os.path.join(outdir, file_hdr)
 
     print(f"{title} Files Will be Saved to {outdir}.")
-    
-    # UMH Model Parameters
-    #H0 = 70  # Hubble constant in km/s/Mpc
-    #c = 299792.458  # speed of light in km/s
 
     # Load Pantheon+
     df = pd.read_csv(panfile, comment="#")
     print(f"[load] Pantheon+ rows: {len(df)}")
     print(df.head(3))
 
-    # ===== 1) Low-z calibrators: estimate a =====
+    # ===== Low-z calibrators: estimate a =====
     d_cal, sig_d, z_cal, sig_L, z_err = build_calibrator_vectors(df, c_kms,
                                                           zmax=0.10, dmax=120.0,
                                                           sigma_ceph_default=0.20,
                                                           vpec_kms=vpec_kms)
     L_cal = np.log1p(z_cal)
 
-    if(USE_HUBBER):
-        # weight by distance errors (conservative); you can also use 1/sig_L^2
-        L_cal = np.log1p(z_cal)                       # z_cal from your low-z selection (z<=0.10)
+    if(USE_HUBER):
+        # weight by distance errors (conservative); can also use 1/sig_L^2
+        L_cal = np.log1p(z_cal)                       # z_cal from low-z selection (z<=0.10)
         w_meas = 1.0/np.maximum(sig_d, 1e-9)**2       # weight by distance errors
 
         a_hat, b0, sigma_a, info = fit_alpha_huber(d_cal, L_cal, w_meas=w_meas, huber_c=2.0, force_through_zero=False) # robust IRLS, same c≈2 as Pantheon+
@@ -592,11 +553,10 @@ def run(config_overrides=None):
     print(f"[calib] a = {a_hat:.6e} ± {sigma_a:.2e}  1/Mpc  (N={d_cal.size})")
 
 
-    # ===== 2) Diagnostic plots in the (d,z) and L-spaces =====
+    # ===== Diagnostic plots in the (d,z) and L-spaces =====
     # Plot: z(d) for calibrators with UMH vs Hubble
     d_grid = np.linspace(0, max(d_cal)*1.05 if len(d_cal) else 150.0, 400)
     z_umh  = np.expm1(a_hat * d_grid)       # pure a-law for display
-    #z_hub  = (H0/c_kms) * d_grid            # linear Hubble line
     
     H0_ref = c_kms * a_hat
     H0_err = c_kms * sigma_a
@@ -626,7 +586,6 @@ def run(config_overrides=None):
 
 
     # --- Preferred: plot in fit space d vs L (polished) ---
-    plt.figure(figsize=(9,6))
     # Pull fit params & provenance
     c0 = float(info.get("c0", 0.0))
     c1 = float(info.get("c1", 1.0 / a_hat))
@@ -665,7 +624,7 @@ def run(config_overrides=None):
     plt.close(fig)
 
 
-    # ===== 3) SN-only Hubble diagram under UMH (non-expansion) =====
+    # ===== SN-only Hubble diagram under UMH (non-expansion) =====
     mask_sn = (df["IS_CALIBRATOR"].astype(int) == 0)
     z_sn    = df.loc[mask_sn, "zHD"].to_numpy(float)
     mb_corr = df.loc[mask_sn, "m_b_corr"].to_numpy(float)
@@ -686,10 +645,8 @@ def run(config_overrides=None):
         Csel = np.diag(sig**2)
 
 
-
     # --- Fit identifiable combo gamma=δ+β1 (and β2)
-    res_g = fit_M_gamma_beta2(
-        z_sn, mb_corr, Csel,
+    res_g = fit_M_gamma_beta2(z_sn, mb_corr, Csel,
         a=a_hat, s=0.0, b=0.0, c_=0.0, d0=1.0, kappa=1.0)
     print(f"[γ,β2]  γ = {res_g['gamma']:.3f} ± {res_g['gamma_err']:.3f}, "
           f"β2 = {res_g['beta2']:.3f} ± {res_g['beta2_err']:.3f}, "
@@ -697,7 +654,6 @@ def run(config_overrides=None):
 
     # Two interpretations to plot:
     # (a) 'δ free, β=0'   ->  δ = γ, β1=0, β2=0
-    #mu_delta_only = res_g['mu0'] + res_g['A']*res_g['gamma'] + res_g['M']
 
     mu_delta_only = res_g['mu0'] + res_g['A']*res_g['gamma']
     chi2_do, M_do = chi2_and_M_best(mb_corr, mu_delta_only, Csel)
@@ -717,15 +673,12 @@ def run(config_overrides=None):
     plt.plot(z_sn[sort], mu_delta_only[sort], lw=2, label="UMH (δ free, β=0)")
     plt.plot(z_sn[sort], mu_beta[sort],      lw=2, ls="--", label="UMH (δ=1, β profiled)")
     plt.xlabel("Redshift z"); plt.ylabel("Distance Modulus μ")
-    #plt.title(f"{title}: Pantheon+ Hubble diagram — δ vs profiled β (no expansion)")
     plt.title("UMH RedShift: Pantheon+ Hubble diagram — δ vs profiled β (no expansion)")
     plt.figtext(0.5, 0.01, cap, ha="center", fontsize=9)
 
     plt.grid(True, alpha=0.3); plt.legend(loc="lower right", bbox_to_anchor=(1.0, 0.0)); plt.tight_layout()
     out_png = f"{file_path}_Hubble_UMH_delta_vs_betas.png"
     plt.savefig(out_png, dpi=dpi); plt.close()
-
-
 
 
     # UMH μ(z): start with simplest a-law (s=b=c=0), delta=1, T=1
@@ -739,13 +692,12 @@ def run(config_overrides=None):
     plt.figure(figsize=(9,6))
     plt.scatter(z_sn, mb_corr, s=9, alpha=0.8, label="Pantheon+ SNe (SN-only)")
     plt.plot(z_sn[idx], (mu_umh + M1)[idx], lw=2.0, color="tab:green", label="UMH (non-expansion)")
-    #plt.plot(np.sort(z_sn), np.sort(mu_umh+M1), lw=2.0, color="tab:green", label="UMH (non-expansion)")
     plt.xlabel("Redshift z"); plt.ylabel("Distance Modulus μ")
     plt.title(f"{title}: Pantheon+ Hubble diagram, with time dilation (δ=1)")
     plt.grid(True, alpha=0.3); plt.legend(loc="lower right", bbox_to_anchor=(1.0, 0.0)); plt.tight_layout(); 
     plt.savefig(f"{file_path}_Hubble_UMH_delta1.png", dpi=dpi); plt.close()
 
-    # ===== 4) Time-dilation scan: vary delta in μ(z) and compute chi2 =====
+    # ===== Time-dilation scan: vary delta in μ(z) and compute chi2 =====
     deltas = np.linspace(0.6, 1.4, 33)  # wide-ish scan around 1
     chi2s  = []
     Ms     = []
@@ -771,10 +723,8 @@ def run(config_overrides=None):
     plt.axvline(1.0, color="k", ls=":", lw=1)
     # add the Option-1 result as a dot at δ=1
     plt.scatter([1.0], [chi2dof_prof], s=70, zorder=3, label=r"δ=1, β profiled")
-    plt.annotate(fr"{chi2dof_prof:.3f}",
-                 xy=(1.0, chi2dof_prof),
-                 xytext=(1.02, chi2dof_prof+0.01),
-                 arrowprops=dict(arrowstyle="-", lw=0.8))
+    plt.annotate(fr"{chi2dof_prof:.3f}", xy=(1.0, chi2dof_prof),
+                 xytext=(1.02, chi2dof_prof+0.01), arrowprops=dict(arrowstyle="-", lw=0.8))
     plt.xlabel(r"Time-dilation exponent $\delta$ in $D_L \propto (1+z)^{(1+\delta)/2}$")
     plt.ylabel(r"$\chi^2/\mathrm{dof}$")
     plt.title(f"{title}: δ-scan (β=0) with δ=1, β profiled overlay")
@@ -796,7 +746,6 @@ def run(config_overrides=None):
     print(f"[delta-scan] best δ ≈ {deltas[jbest]:.3f} with χ2/dof ≈ {chi2s[jbest]/dof_1:.3f}")
 
 
-
     # Pick δ values to illustrate
     # δ=1 is the UMH/physical time-dilation expectation.
     deltas_to_plot = [(1.0, "UMH expectation (δ=1)")]
@@ -809,8 +758,7 @@ def run(config_overrides=None):
     delta_equiv = float(res_g["gamma"])
     deltas_to_plot.append((delta_equiv, rf"δ-equivalent from γ (β1=0): {delta_equiv:.2f}"))
 
-
-    # --- build μ for (a) δ free, β=0  (use best δ from your β=0 scan)
+    # --- build μ for (a) δ free, β=0  (use best δ from β=0 scan)
     delta_best_scan = float(deltas[int(jbest)])
     A = 2.5*np.log10(1.0 + z_sn)
     mu0 = mu0_umh_nonexp(z_sn, a=a_hat)                    # δ=0, T=1
@@ -825,15 +773,9 @@ def run(config_overrides=None):
     res_a = mb_corr - mu_delta
     res_b = mb_corr - mu_beta
 
-
-
     # running median (windowed) for the profiled-β case
     order = np.argsort(z_sn)
     zs, rs = z_sn[order], (mb_corr - res_beta["mu_model"])[order]
-
-    #win = 75  # ~75 SNe per window; tune as you like
-    #med = np.convolve(rs, np.ones(win)/win, mode="valid")
-    #zmid = np.convolve(zs, np.ones(win)/win, mode="valid")
 
     s_rs = pd.Series(rs)
     med = s_rs.rolling(window=75, center=True, min_periods=30).median().to_numpy()
@@ -849,7 +791,6 @@ def run(config_overrides=None):
     plt.title(f"{title}: Hubble-diagram Residuals vs z")
     plt.grid(True, alpha=0.3); plt.legend(loc="lower right"); plt.tight_layout()
     plt.savefig(f"{file_path}_Residuals_mu_vs_z.png", dpi=dpi); plt.close()
-
 
 
     # unweighted mean/std (M profiling makes the mean ~0)
@@ -891,13 +832,9 @@ def run(config_overrides=None):
 
     plt.figure(figsize=(10,5.8))
     plt.errorbar(xc, med, yerr=[ylo, yhi], fmt="o", ms=5, capsize=2, label=r"median $\pm$68% (δ=1, β profiled)")
-    #for xi, mi, ni in zip(xc, med, nbin):
-    #    plt.text(xi, mi+0.015, f"{ni}", ha="center", va="bottom", fontsize=8, alpha=0.8)  # show N per bin
     ax = plt.gca()
     for x, n in zip(xc, nbin):
-        ax.text(x, 0.005, f"{n}",
-                ha="center", va="bottom",
-                fontsize=8, color="0.4", alpha=0.6)   # smaller, grey, semi-transparent
+        ax.text(x, 0.005, f"{n}", ha="center", va="bottom", fontsize=8, color="0.4", alpha=0.6)   # smaller, grey, semi-transparent
 
     plt.axhline(0, color="k", lw=1)
     plt.ylim(-0.3, 0.3)
@@ -906,12 +843,9 @@ def run(config_overrides=None):
     plt.grid(True, alpha=0.3); plt.legend(loc="lower right"); plt.tight_layout()
     plt.savefig(f"{file_path}_Residuals_Binned_beta_profiled.png", dpi=dpi); plt.close()
 
-
-
     
-    zmax = float(np.nanmax(z_sn))   # use the same array you used for the Hubble diagram
+    zmax = float(np.nanmax(z_sn))
     z = np.linspace(0.0, zmax, 400)
-    
 
     plt.figure(figsize=(8,5))
     for dlt, lbl in deltas_to_plot:
@@ -935,7 +869,6 @@ def run(config_overrides=None):
     plt.grid(True, alpha=0.3); plt.legend(loc="upper left");
     plt.savefig(f"{file_path}_mu_timedilation_factor.png", dpi=dpi); plt.close()
 
-
     
     plt.figure(figsize=(8,5))
     for dlt, lbl in deltas_to_plot:
@@ -955,7 +888,6 @@ def run(config_overrides=None):
 
     plt.xlabel("Redshift z")
     plt.ylabel(r"Physical time-stretch $S(z)=(1+z)^{\delta}$")
-    #plt.title(f"{title}: physical time-stretch")
 
     plt.title("UMH RedShift: physical time-stretch")
     plt.figtext(0.5, 0.01, cap, ha="center", fontsize=9)
@@ -980,7 +912,7 @@ def run(config_overrides=None):
             """
             Return arrays for calibration:
               - z, ln1pz, sigma_L (error on ln(1+z)), d_Mpc (+ optional d_err)
-            If d_Mpc is None, you must provide (mb, M) to compute D_L and then d.
+            If d_Mpc is None, must have (mb, M) to compute D_L and then d.
             Uncertainty model:
               sigma_L^2 = (z_err/(1+z))^2 + (vpec/c)^2    (peculiar-velocity floor)
             """
@@ -988,24 +920,18 @@ def run(config_overrides=None):
 
             # distance
             if d_Mpc is None:
-                if mb is None or M is None:
-                    raise ValueError("Provide d_Mpc or (mb and M).")
+                if mb is None or M is None: raise ValueError("Provide d_Mpc or (mb and M).")
                 mu = np.asarray(mb, float) - float(M)
                 DL = distance_modulus_to_DL_Mpc(mu)  # Mpc
                 d_Mpc = DL/(1.0+z) if use_comoving else DL
-            else:
-                d_Mpc = np.asarray(d_Mpc, float)
+            else: d_Mpc = np.asarray(d_Mpc, float)
 
             # optional errors
-            if z_err is None:
-                z_err = np.zeros_like(z)
-            else:
-                z_err = np.asarray(z_err, float)
+            if z_err is None: z_err = np.zeros_like(z)
+            else: z_err = np.asarray(z_err, float)
 
-            if d_err is None:
-                d_err = np.zeros_like(d_Mpc)
-            else:
-                d_err = np.asarray(d_err, float)
+            if d_err is None: d_err = np.zeros_like(d_Mpc)
+            else: d_err = np.asarray(d_err, float)
 
             ok = np.isfinite(z) & np.isfinite(d_Mpc) & (z > 0.0) & (d_Mpc > 0.0)
             z, d_Mpc, z_err, d_err = z[ok], d_Mpc[ok], z_err[ok], d_err[ok]
@@ -1016,8 +942,7 @@ def run(config_overrides=None):
             return z, d_Mpc, d_err, ln1pz, sigma_L
 
 
-        def save_redshift_calibration(
-            file_path, z, z_err, d_Mpc, d_err, ln1pz, sigma_L,
+        def save_redshift_calibration(file_path, H0, z, z_err, d_Mpc, d_err, ln1pz, sigma_L,
             alpha, alpha_err, intercept, info, res_beta):
 
             csv_path  = f"{file_path}_Calibration_Data.csv"
@@ -1035,6 +960,7 @@ def run(config_overrides=None):
                 "alpha_err_1_per_Mpc": float(alpha_err),
                 "alpha_1_per_m":    float(alpha / MPC_IN_M),
                 "intercept":        float(intercept),
+                "H0":               float(H0),
                 "H0_km_s_Mpc":      float(c_kms * alpha),
                 "meta":             info,
                 "units": {
@@ -1045,7 +971,6 @@ def run(config_overrides=None):
                     "sigma_L": "dimensionless"
                 },
                 "peculiar_velocity_floor_kms": float(vpec_kms),
-                #"sources": {"csv": os.path.basename(csv_path)}
 
                 # profiled M and betas (with errors)
                 "M_best": float(res_beta["M"]),
@@ -1071,8 +996,7 @@ def run(config_overrides=None):
                 "dtype":  "float32"
             }
 
-            with open(json_path, "w") as f:
-                json.dump(payload, f, indent=2)
+            with open(json_path, "w") as f: json.dump(payload, f, indent=2)
 
             return csv_path, json_path
 
@@ -1092,7 +1016,7 @@ def run(config_overrides=None):
 
         # ---------- save CSV + JSON ----------
         csv_path, json_path = save_redshift_calibration(
-            file_path,
+            file_path, H0,
             z       = z,
             z_err   = z_err.astype(float),
             d_Mpc   = d_Mpc,
@@ -1103,10 +1027,9 @@ def run(config_overrides=None):
             alpha_err     = alpha_err,
             intercept     = b0,
             info          = info,
-            res_beta = res_beta
-        )
+            res_beta = res_beta)
 
-        if(USE_HUBBER):
+        if(USE_HUBER):
             print(f"[CAL] α = {a_hat:.6e} ± {sigma_a:.2e} 1/Mpc "
                   f"({a_hat/MPC_IN_M:.3e} 1/m) | H0 = {c_kms*a_hat:.2f} km/s/Mpc "
                   f"| N={info['N']}  χ²/dof={info['chi2_dof']:.3f}  "
