@@ -1,0 +1,202 @@
+UMH Gravitational-Wave (LIGO) Simulation — README
+===============================================
+
+Purpose
+-------
+This simulation implements the Ultronic Medium Hypothesis (UMH) gravitational-wave
+framework and applies it to the GW150914 event. The goal is NOT to compete with or
+replace General Relativity (GR), nor to optimize waveform fits within GR-based
+pipelines.
+
+Instead, this simulation demonstrates that when cosmological *mapping assumptions*
+(expansion, ΛCDM priors) are removed and replaced with a tension-based UMH mapping
+(calibrated independently from Pantheon+), gravitational-wave observables
+(frequency, phase, time dilation, amplitude) remain self-consistent across detectors
+and produced a qualifying LIGO type observed Chirp.
+
+The comparison is therefore with **GR pipelines**, not with GR itself.
+
+Core UMH ingredients
+--------------------
+
+1) **Tension-based cosmological mapping (no expansion)**
+   - UMH does not interpret redshift, time dilation, or amplitude scaling as arising
+     from metric expansion.
+   - A global **tension field** in a Lorentz-consistent medium governs the
+     source–observer mapping.
+   - This mapping is calibrated *once* from Pantheon+ supernova data and then
+     transported unchanged to gravitational-wave observables.
+
+2) **Forward UMH chirp generation (mechanism-first)**
+   - The UMH chirp generator produces an intrinsic inspiral → merger → ringdown
+     waveform from UMH medium dynamics.
+   - No phenomenological waveform families are used.
+   - No per-detector fitting, mass/spin maximization, phase warping, or template banks
+     are involved.
+   - The resulting waveform is a **forward prediction**, not a best fit.
+
+3) **Frequency evolution**
+   - The inspiral obeys the leading-order chirp scaling:
+         df/dt ∝ f^(11/3),   f ∝ (t_c − t)^(−3/8)
+   - This scaling is shared with GR at Newtonian order and reflects generic
+     radiation-reaction behavior, not GR-specific ontology.
+   - Higher-order PN terms may be included for diagnostic comparison only and are
+     disabled in strict UMH demonstrations.
+
+4) **Detector projection (geometry only)**
+   - The intrinsic UMH waveform is projected into Hanford and Livingston using:
+       • antenna pattern geometry,
+       • a single global time reference,
+       • a single polarity convention.
+   - Relative detector timing is constrained by geometry; detectors are NOT fit
+     independently.
+
+Code components
+---------------
+
+A) UMH_Chirp_Generator.py
+   - Generates the intrinsic UMH gravitational-wave strain.
+   - Outputs time-domain strain, instantaneous frequency, phase, and metadata.
+   - Visualization band limits (if present) are explicitly marked as VIZ-ONLY and do
+     not affect waveform generation.
+
+B) UMH_Ligo_Compiler.py
+   - Loads publicly available LOSC strain data for GW150914.
+   - Applies deterministic conditioning (bandpass, whitening) equally to data and
+     UMH waveform.
+   - Performs **diagnostic** comparisons only:
+       • time-domain overlays,
+       • spectrograms,
+       • residuals,
+       • windowed correlations.
+   - No detector-specific tuning is performed in strict mode.
+
+Pipeline philosophy (important)
+-------------------------------
+
+• This is NOT a matched-filter search.
+• This does NOT maximize likelihood over waveform families.
+• This does NOT claim superior statistical detection power.
+
+Instead, the question being tested is:
+
+   “If a physically real, Lorentz-consistent medium with a global tension law is postulated, 
+    can that medium—using only its intrinsic dynamics and a single externally calibrated 
+    mapping—generate the observed gravitational-wave phenomenology, without invoking metric 
+    expansion, dark matter, or waveform-family optimization?”
+
+GW150914 analysis steps
+----------------------
+
+1) **Load event data**
+   - GW150914 strain data are loaded from LOSC.
+   - A fixed event window is used (no sliding or optimization).
+
+2) **Generate UMH waveform**
+   - UMH chirp is generated independently of detector data.
+   - No information from LIGO data feeds back into generation.
+
+3) **Apply cosmological mapping**
+   - Pantheon+-calibrated UMH tension mapping is applied to:
+       • frequency evolution,
+       • phase accumulation,
+       • time dilation,
+       • amplitude vs distance.
+
+4) **Conditioning (symmetric)**
+   - Identical bandpass and whitening procedures are applied to:
+       • LIGO data,
+       • UMH waveform.
+   - Whitening uses Welch PSD with fixed parameters and a PSD floor.
+
+5) **Projection & alignment**
+   - One global time offset is applied.
+   - One polarity convention is chosen.
+   - No per-detector lag fitting or stretching in strict mode.
+
+6) **Diagnostics**
+   - Time-domain overlays and residuals.
+   - Time–frequency spectrograms.
+   - Windowed correlation metrics (reported, not optimized).
+
+What to look for in the outputs
+-------------------------------
+
+Time-domain figures
+-------------------
+• Whitened UMH vs LIGO strain overlays for H1 and L1.
+• Residual plots showing structure vs noise.
+• Clear inspiral-merger-ringdown morphology alignment without per-detector tuning.
+
+Spectrograms
+------------
+• Time–frequency ridges showing consistent chirp evolution.
+• Residual spectrograms indicating where structure remains or vanishes.
+
+Correlation diagnostics
+-----------------------
+• Windowed Pearson correlations computed under fixed rules.
+• Values reported for transparency; not maximized over free parameters.
+
+Key interpretation points
+-------------------------
+
+1) The GW150914 chirp does NOT uniquely force an expansion-based cosmology.
+2) GR local dynamics remain valid; the disagreement is with **pipeline assumptions**.
+3) A single, externally calibrated tension-based mapping can be applied consistently
+   to both supernovae and gravitational waves.
+4) The success of GR pipelines reflects descriptive flexibility, not necessarily
+   unique physical ontology.
+
+What this does NOT claim
+-----------------------
+
+• This is NOT a replacement for GR.
+• This is NOT a detection pipeline.
+• This is NOT a claim of higher SNR than LIGO templates.
+• This is NOT a claim that GR waveforms are “wrong”.
+
+It IS a demonstration that:
+• the observed inspiral–merger–ringdown structure can arise from a medium-based mechanism
+• cosmological interpretation is separable from local dynamics,
+• current pipelines implicitly hard-code expansion + ΛCDM,
+• UMH provides a coherent, mechanism-based alternative mapping.
+
+Reproducibility & knobs
+----------------------
+
+• Strict mode:
+    - No per-detector fitting
+    - No stretch or lag optimization
+    - One global alignment only
+
+• Diagnostics only (reported, not applied):
+    - Envelope-based event time estimate
+    - Peak correlation lag
+    - Optional PN-term comparisons
+
+• All configuration flags and processing steps are written to JSON summaries for
+  auditability.
+
+Relationship to UMH_RedShiftPlus
+--------------------------------
+
+This simulation uses the SAME cosmological calibration philosophy as the UMH redshift
+study: a one-time Pantheon+ calibration applied unchanged to a different physical
+regime.
+
+See:
+   UMH_RedShiftPlus.txt
+for the detailed derivation and validation of the tension-based distance–redshift
+mapping. :contentReference[oaicite:0]{index=0}
+
+Conceptual summary
+------------------
+
+GR and QFT describe observations.
+UMH proposes the physical mechanism beneath those descriptions.
+
+This gravitational-wave simulation shows that once the mechanism is specified,
+multiple observational domains (SN redshift and GW chirps) can be treated
+consistently without invoking expansion or dark matter.
+
