@@ -5,10 +5,11 @@ Purpose
 -------
 Evaluate whether the Ultronic Medium Hypothesis (UMH) in a non-expansion
 cosmology reproduces the Pantheon+ SN Ia Hubble diagram using the full
-STAT+SYS covariance, and compare against flat ΛCDM.  UMH here is a
-“one-knob” model (only the absolute magnitude M / intercept is adjusted
-and profiled); ΛCDM requires two knobs for this task (Ω_m to set shape
-plus the same profiled M to set the intercept).
+STAT+SYS covariance, and compare against flat ΛCDM. UMH here has a single
+effective cosmological degree of freedom (α), which is calibrated once at
+low redshift and then held fixed. In the Pantheon+ fit, only the absolute
+magnitude M (intercept) is profiled. ΛCDM requires two cosmological
+degrees of freedom for this task (Ω_m to set shape plus the same profiled M).
 
 
 Inputs
@@ -29,7 +30,7 @@ Method (summary)
 ----------------
 1) Low-z calibration
    - Regress L = ln(1+z) on comoving distance d for z ≤ 0.10.
-   - Best slope a ≈ 2.481805e-04 1/Mpc (UMH native scale).
+   - Best slope α ≈ 2.481805e-04 1/Mpc (UMH native scale).
 
 2) UMH (non-expansion) model
    - Cosmological redshift from the UMH clock-rate field.
@@ -51,11 +52,12 @@ Method (summary)
 Key results (this run)
 ----------------------
 - Low-z slope: a = 2.481805e-04 1/Mpc.
-- Best UMH (non-expansion): β1 ≈ 0.432, β2 ≈ –0.270 (with a fixed).
+- Best UMH (non-expansion): β1 ≈ 0.432, β2 ≈ –0.270 (estimated once and 
+  held fixed; not refit in the Pantheon+ comparison).
   χ² = 1456.8 for N = 1624; counted parameters k = 1 (only M is adjusted
   and profiled) → dof = 1623.  AIC = 1458.8; BIC ≈ 1464.2.
 - Best flat ΛCDM: Ω_m* ≈ 0.333, χ² ≈ 1457.0 (Ω_m free; M profiled).
-  AIC = 1459.0; BIC ≈ 1464.4.
+  AIC = 1461.0; BIC ≈ 1471.8.
 - GLS slopes (consistent with zero in all cases):
     • Residuals vs z:         m = 0.016 ± 0.023
     • Residuals vs ln(1+z):   m = 0.023 ± 0.032
@@ -66,9 +68,10 @@ Takeaway (model comparison)
 The UMH one-knob model (only M) fits the Pantheon+ Hubble diagram
 *comparably* to flat ΛCDM, which uses two knobs for this task (Ω_m + M).
 The near-identical χ²/AIC/BIC and the absence of residual trends indicate
-that UMH’s non-expansion redshift mechanism reproduces the observed SN
-distance–redshift relation without introducing additional shape freedom
-beyond the intercept, whereas ΛCDM needs an extra shape parameter (Ω_m).
+that UMH reproduces the observed SN distance–redshift relation under its
+non-expansion redshift formulation the observed SN distance–redshift relation 
+without introducing additional shape freedom beyond the intercept, whereas 
+ΛCDM needs an extra shape parameter (Ω_m).
 
 
 Produced figures — what each shows
@@ -76,7 +79,7 @@ Produced figures — what each shows
 1) UMH_vs_PantheonPlus_Supernovae.png
    - Hubble diagram: distance modulus μ vs redshift z.
    - Blue points: Pantheon+ SNe with errors. Red curve: best-fit UMH.
-   - Demonstrates that UMH tracks the full dataset from z≈0 to z>2.
+   - Demonstrates that UMH reproduces the full dataset from z≈0 to z>2.
 
 2) UMH_vs_PantheonPlus_vs_LCDM.png
    - Same Hubble diagram with both UMH (solid red) and ΛCDM (dashed green).
@@ -122,7 +125,7 @@ How to reproduce
    The script:
    - loads the catalogue and covariance,
    - performs the low-z calibration,
-   - fits UMH (with only M as the adjustable/profiling knob),
+   - fits UMH (with only M as profiled in the final Pantheon+ fit),
    - fits a reference flat ΛCDM (Ω_m + profiled M),
    - writes a summary and saves the figures above.
 
