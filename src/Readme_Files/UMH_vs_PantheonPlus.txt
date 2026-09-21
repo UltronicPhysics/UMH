@@ -7,36 +7,39 @@ Evaluate whether the Ultronic Medium Hypothesis (UMH) in a non-expansion
 cosmology reproduces the Pantheon+ SN Ia Hubble diagram using the full
 STAT+SYS covariance, and compare against flat ΛCDM. UMH here has a single
 effective cosmological degree of freedom (α), which is calibrated once at
-low redshift and then held fixed. In the Pantheon+ fit, only the absolute
-magnitude M (intercept) is profiled. ΛCDM requires two cosmological
-degrees of freedom for this task (Ω_m to set shape plus the same profiled M).
+low redshift and then held fixed. For the conditional final Hubble-diagram 
+comparison, UMH has k=1 (the profiled intercept M), while flat ΛCDM has k=2
+(the profiled intercept M plus fitted Ω_m).
 
 
 Inputs
 ------
 - Pantheon+ SH0ES catalogue: PantheonPlus_SH0ES.dat
 - Pantheon+ STAT+SYS covariance: PantheonPlus_SH0ES_STAT_SYS.cov
-- Analysis script: UMH_vs_Pantheon_v2022.py
-- Theory reference: UMH_Compressed.pdf
+- Analysis script: UMH_vs_PantheonPlus.py
+- Theory reference: UMH.pdf
+- Published paper: A. Dodge, "Pantheon+ and Redshift Observational Analysis of the UMH Redshift Formulation", Reports in Advances of Physical Sciences 8 (2026) 2650012, DOI 10.1142/S242494242650012X
 
 
 Sample / cuts
 -------------
-- Working sample after standard Pantheon+ quality cuts: N = 1624 SNe.
+- Pantheon+ SN-only sample: N = 1624 SNe after excluding the 77 Cepheid calibrators from the 1701-object table.
 - Low-z calibration uses z ≤ 0.10.
 
 
 Method (summary)
 ----------------
 1) Low-z calibration
-   - Regress L = ln(1+z) on comoving distance d for z ≤ 0.10.
-   - Best slope α ≈ 2.481805e-04 1/Mpc (UMH native scale).
+   - Regress distance d on L = ln(1+z) for z ≤ 0.10 using
+     d = c0 + c1*L, with α = 1/c1.
+   - Best α ≈ 2.481805e-04 1/Mpc (UMH native scale).
 
 2) UMH (non-expansion) model
    - Cosmological redshift from the UMH clock-rate field.
    - Flux transmission factor:
          T(z) = exp[ –(β1 * L + β2 * L^2) ],  where L = ln(1+z).
-   - Absolute magnitude M is the *only* adjustable knob and is profiled
+   - In the conditional final Hubble-diagram likelihood, the absolute
+     magnitude/intercept M is the only parameter profiled
      (analytic minimization of χ²(M)).
    - χ² computed with the full Pantheon+ STAT+SYS covariance (Cholesky).
 
@@ -52,8 +55,9 @@ Method (summary)
 Key results (this run)
 ----------------------
 - Low-z slope: a = 2.481805e-04 1/Mpc.
-- Best UMH (non-expansion): β1 ≈ 0.432, β2 ≈ –0.270 (estimated once and 
-  held fixed; not refit in the Pantheon+ comparison).
+- Best UMH (non-expansion): β1 ≈ 0.432, β2 ≈ –0.270, recovered in the
+  Pantheon+ transmission-calibration stage and then held fixed in the conditional
+  final Hubble-diagram likelihood; only M is profiled there.
   χ² = 1456.8 for N = 1624; counted parameters k = 1 (only M is adjusted
   and profiled) → dof = 1623.  AIC = 1458.8; BIC ≈ 1464.2.
 - Best flat ΛCDM: Ω_m* ≈ 0.333, χ² ≈ 1457.0 (Ω_m free; M profiled).
@@ -65,13 +69,12 @@ Key results (this run)
 
 Takeaway (model comparison)
 ---------------------------
-The UMH one-knob model (only M) fits the Pantheon+ Hubble diagram
-*comparably* to flat ΛCDM, which uses two knobs for this task (Ω_m + M).
-The near-identical χ²/AIC/BIC and the absence of residual trends indicate
-that UMH reproduces the observed SN distance–redshift relation under its
-non-expansion redshift formulation the observed SN distance–redshift relation 
-without introducing additional shape freedom beyond the intercept, whereas 
-ΛCDM needs an extra shape parameter (Ω_m).
+The UMH conditional final-fit configuration, in which only M is profiled,
+fits the Pantheon+ Hubble diagram comparably to flat ΛCDM, whose
+conditional final fit varies Ω_m while also profiling M.
+The near-identical χ² and absence of residual trends indicate that UMH
+reproduces the observed SN distance–redshift relation under its
+non-expansion redshift formulation.
 
 
 Produced figures — what each shows
@@ -121,7 +124,7 @@ Produced figures — what each shows
 How to reproduce
 ----------------
 1) Ensure data/covariance paths in get_default_config() are correct.
-2) Run UMH_vs_Pantheon_v2022.py (non-interactive; uses Agg).
+2) Run UMH_vs_PantheonPlus.py (non-interactive; uses Agg).
    The script:
    - loads the catalogue and covariance,
    - performs the low-z calibration,
@@ -138,7 +141,7 @@ COV_FILE                = PantheonPlus_SH0ES_STAT_SYS.cov
 N_SN                    = 1624
 CAL_LOWZ_ZMAX           = 0.10
 CAL_ALPHA_A             = 2.481805e-04 1/Mpc
-MODEL                   = UMH_nonexp (one knob: profiled M)
+MODEL                   = UMH_nonexp (conditional final fit: M profiled)
 UMH_PARAMS              = a=2.481805e-04, beta1=0.432, beta2=-0.270
 PROFILED_M              = (reported by run)
 CHI2_UMH                = 1456.8
@@ -148,10 +151,10 @@ AIC_UMH                 = 1458.8
 BIC_UMH                 = 1464.2
 GLS_SLOPE_Z             = 0.016 +/- 0.023
 GLS_SLOPE_LN1PZ         = 0.023 +/- 0.032
-LCDM_MODEL              = flat ΛCDM (two knobs: Ω_m + profiled M)
+LCDM_MODEL              = flat ΛCDM (conditional final fit: Ω_m varied, M profiled)
 LCDM_OMEGAM_BEST        = 0.333
 CHI2_LCDM               = 1457.0
-AIC_LCDM                = 1459.0
-BIC_LCDM                = 1464.4
+AIC_LCDM                = 1461.0
+BIC_LCDM                = 1471.8
 FIGURES                 = [Supernovae, vs_LCDM, vs_LCDM_Annotated, Residuals, Residuals_Zoom, Binned_Residuals, Residuals_vs_ln1pz, WhitenedResiduals]
-NOTES                   = UMH reproduces Pantheon+ with a single adjustable intercept (M); ΛCDM needs an additional shape parameter (Ω_m).
+NOTES                   = In the conditional final-fit likelihood, UMH profiles only M; flat ΛCDM varies Ω_m while also profiling M.

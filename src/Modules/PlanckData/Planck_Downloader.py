@@ -37,17 +37,29 @@ def get_default_config(config_overrides=None):
         "PLANCK_CMB_TXT_DATA_URL": "https://irsa.ipac.caltech.edu/data/Planck/release_3/ancillary-data/cosmoparams/COM_PowerSpect_CMB-TT-full_R3.01.txt", #COM_PowerSpect_CMB-tt-full_R3.01.txt
         "PLANCK_CMB_TXT_DATA_FILENAME": "COM_PowerSpect_CMB-tt-full_R3.01.txt",
 
-        "PLANCK_HANFORD_LIGO_DATA_URL": "https://losc.ligo.org/s/events/GW150914/H-H1_LOSC_4_V1-1126259446-32.hdf5", #H-H1_LOSC_4_V1-1126259446-32.hdf5
-        "PLANCK_HANFORD_LIGO_DATA_FILENAME": "H-H1_LOSC_4_V1-1126259446-32.hdf5",
+        "PLANCK_HANFORD_LIGO_DATA_16k_URL": "https://losc.ligo.org/s/events/GW150914/H-H1_LOSC_16_V1-1126259446-32.hdf5", #H-H1_LOSC_16_V1-1126259446-32.hdf5
+        "PLANCK_HANFORD_LIGO_DATA_16k_FILENAME": "H-H1_LOSC_16_V1-1126259446-32.hdf5",
 
-        "PLANCK_LIVINGSTON_LIGO_DATA_URL": "https://losc.ligo.org/s/events/GW150914/L-L1_LOSC_4_V1-1126259446-32.hdf5", #L-L1_LOSC_4_V1-1126259446-32.hdf5
-        "PLANCK_LIVINGSTON_LIGO_DATA_FILENAME": "L-L1_LOSC_4_V1-1126259446-32.hdf5",
+        "PLANCK_LIVINGSTON_LIGO_DATA_16k_URL": "https://losc.ligo.org/s/events/GW150914/L-L1_LOSC_16_V1-1126259446-32.hdf5", #L-L1_LOSC_16_V1-1126259446-32.hdf5
+        "PLANCK_LIVINGSTON_LIGO_DATA_16k_FILENAME": "L-L1_LOSC_16_V1-1126259446-32.hdf5",
+
+        "PLANCK_HANFORD_LIGO_GW170814_DATA_16k_URL": "https://gwosc.org/eventapi/html/GWTC-1-confident/GW170814/v3/H-H1_GWOSC_16KHZ_R1-1186741846-32.hdf5",
+        #"PLANCK_HANFORD_LIGO_GW170814_DATA_16k_URL": "https://gwosc.org/archive/data/O2_16KHZ_R1/1185939456/H-H1_GWOSC_O2_16KHZ_R1-1186738176-4096.hdf5",
+        "PLANCK_HANFORD_LIGO_GW170814_DATA_16k_FILENAME": "H-H1_GWOSC_16KHZ_R1-1186741846-32.hdf5", #H-H1_GWOSC_O2_16KHZ_R1-1186738176-4096.hdf5",
+
+        "PLANCK_LIVINGSTON_LIGO_GW170814_DATA_16k_URL": "https://gwosc.org/eventapi/html/GWTC-1-confident/GW170814/v3/L-L1_GWOSC_16KHZ_R1-1186741846-32.hdf5",
+        #"PLANCK_LIVINGSTON_LIGO_GW170814_DATA_16k_URL": "https://gwosc.org/archive/data/O2_16KHZ_R1/1185939456/L-L1_GWOSC_O2_16KHZ_R1-1186738176-4096.hdf5",
+        "PLANCK_LIVINGSTON_LIGO_GW170814_DATA_16k_FILENAME": "L-L1_GWOSC_16KHZ_R1-1186741846-32.hdf5", #"L-L1_GWOSC_O2_16KHZ_R1-1186738176-4096.hdf5",
+
+        "PLANCK_VIRGO_LIGO_GW170814_DATA_16k_URL": "https://gwosc.org/eventapi/html/GWTC-1-confident/GW170814/v3/V-V1_GWOSC_16KHZ_R1-1186741846-32.hdf5",
+        #"PLANCK_VIRGO_LIGO_GW170814_DATA_16k_URL": "https://gwosc.org/archive/data/O2_16KHZ_R1/1185939456/V-V1_GWOSC_O2_16KHZ_R1-1186738176-4096.hdf5",
+        "PLANCK_VIRGO_LIGO_GW170814_DATA_16k_FILENAME": "V-V1_GWOSC_16KHZ_R1-1186741846-32.hdf5", #"V-V1_GWOSC_O2_16KHZ_R1-1186738176-4096.hdf5",
 
         "PLANCK_CMB_FITS_DATA_URL": "https://irsa.ipac.caltech.edu/data/Planck/release_3/all-sky-maps/maps/component-maps/cmb/COM_CMB_IQU-smica_2048_R3.00_full.fits", #COM_CMB_IQU-smica_2048_R3.00_full.fits
         "PLANCK_CMB_FITS_DATA_FILENAME": "COM_CMB_IQU-smica_2048_R3.00_full.fits",
 
-        "DPI":300, #PNG Resolution.
-        "DTYPE":np.float64, #Precision.
+        "DPI": 300, #PNG Resolution.
+        "DTYPE": np.float64, #Precision.
 
         "OUTPUT_FOLDER": os.path.join(base, "Output")
     }
@@ -88,17 +100,27 @@ def download_file(title,url, file_out, chunk_size=1024*1024):
 
 def run_pantheon_data_download(config_overrides=None):
     config = get_default_config()
-    if config_overrides:
-        config.update(config_overrides)
+    if config_overrides: config.update(config_overrides)
     
     PLANCK_CMB_TXT_DATA_URL=config["PLANCK_CMB_TXT_DATA_URL"]
     PLANCK_CMB_TXT_DATA_FILENAME=config["PLANCK_CMB_TXT_DATA_FILENAME"]
 
-    PLANCK_HANFORD_LIGO_DATA_URL=config["PLANCK_HANFORD_LIGO_DATA_URL"]
-    PLANCK_HANFORD_LIGO_DATA_FILENAME=config["PLANCK_HANFORD_LIGO_DATA_FILENAME"]
+    PLANCK_HANFORD_LIGO_DATA_16k_URL=config["PLANCK_HANFORD_LIGO_DATA_16k_URL"]
+    PLANCK_HANFORD_LIGO_DATA_16k_FILENAME=config["PLANCK_HANFORD_LIGO_DATA_16k_FILENAME"]
 
-    PLANCK_LIVINGSTON_LIGO_DATA_URL=config["PLANCK_LIVINGSTON_LIGO_DATA_URL"]
-    PLANCK_LIVINGSTON_LIGO_DATA_FILENAME=config["PLANCK_LIVINGSTON_LIGO_DATA_FILENAME"]
+    PLANCK_LIVINGSTON_LIGO_DATA_16k_URL=config["PLANCK_LIVINGSTON_LIGO_DATA_16k_URL"]
+    PLANCK_LIVINGSTON_LIGO_DATA_16k_FILENAME=config["PLANCK_LIVINGSTON_LIGO_DATA_16k_FILENAME"]
+
+    #GW170814 Event.
+    PLANCK_HANFORD_LIGO_GW170814_DATA_16k_URL=config["PLANCK_HANFORD_LIGO_GW170814_DATA_16k_URL"]
+    PLANCK_HANFORD_LIGO_GW170814_DATA_16k_FILENAME=config["PLANCK_HANFORD_LIGO_GW170814_DATA_16k_FILENAME"]
+
+    PLANCK_LIVINGSTON_LIGO_GW170814_DATA_16k_URL=config["PLANCK_LIVINGSTON_LIGO_GW170814_DATA_16k_URL"]
+    PLANCK_LIVINGSTON_LIGO_GW170814_DATA_16k_FILENAME=config["PLANCK_LIVINGSTON_LIGO_GW170814_DATA_16k_FILENAME"]
+
+    PLANCK_VIRGO_LIGO_GW170814_DATA_16k_URL=config["PLANCK_VIRGO_LIGO_GW170814_DATA_16k_URL"]
+    PLANCK_VIRGO_LIGO_GW170814_DATA_16k_FILENAME=config["PLANCK_VIRGO_LIGO_GW170814_DATA_16k_FILENAME"]
+    #GW170814 Event.
 
     PLANCK_CMB_FITS_DATA_URL=config["PLANCK_CMB_FITS_DATA_URL"]
     PLANCK_CMB_FITS_DATA_FILENAME=config["PLANCK_CMB_FITS_DATA_FILENAME"]
@@ -127,58 +149,62 @@ def run_pantheon_data_download(config_overrides=None):
         file_out=os.path.join(outdir, PLANCK_CMB_TXT_DATA_FILENAME)
         file_out_chk = Path(file_out)
         if not file_out_chk.exists() or input(f"{file_out} exists. Overwrite? (y/n): ").strip().lower() == 'y':
-            dwnerr+=download_file(title,PLANCK_CMB_TXT_DATA_URL,file_out)
-        else:
-            print(f"❌ {title}: Skipping download for: {file_out}.")
-
-
-    except requests.exceptions.RequestException as e:
-        print(f"❌ {title}: Error occurred during download: {e}.")
-        dwnerr+=1
+            dwnerr+=download_file(title, PLANCK_CMB_TXT_DATA_URL,file_out)
+        else: print(f"❌ {title}: Skipping download for: {file_out}.")
+    except requests.exceptions.RequestException as e: dwnerr+=1; print(f"❌ {title}: Error occurred during download: {e}.")
 
     try:
-        file_out=os.path.join(outdir, PLANCK_HANFORD_LIGO_DATA_FILENAME)
+        file_out=os.path.join(outdir, PLANCK_HANFORD_LIGO_DATA_16k_FILENAME)
         file_out_chk = Path(file_out)
         if not file_out_chk.exists() or input(f"{file_out} exists. Overwrite? (y/n): ").strip().lower() == 'y':
-            dwnerr+=download_file(title,PLANCK_HANFORD_LIGO_DATA_URL,file_out)
-        else:
-            print(f"❌ {title}: Skipping download for: {file_out}.")
-
-
-    except requests.exceptions.RequestException as e:
-        print(f"❌ {title}: Error occurred during download: {e}.")
-        dwnerr+=1
+            dwnerr+=download_file(title, PLANCK_HANFORD_LIGO_DATA_16k_URL,file_out)
+        else: print(f"❌ {title}: Skipping download for: {file_out}.")
+    except requests.exceptions.RequestException as e: dwnerr+=1; print(f"❌ {title}: Error occurred during download: {e}.")
 
     try:
-        file_out=os.path.join(outdir, PLANCK_LIVINGSTON_LIGO_DATA_FILENAME)
+        file_out=os.path.join(outdir, PLANCK_LIVINGSTON_LIGO_DATA_16k_FILENAME)
         file_out_chk = Path(file_out)
         if not file_out_chk.exists() or input(f"{file_out} exists. Overwrite? (y/n): ").strip().lower() == 'y':
-            dwnerr+=download_file(title,PLANCK_LIVINGSTON_LIGO_DATA_URL,file_out)
-        else:
-            print(f"❌ {title}: Skipping download for: {file_out}.")
+            dwnerr+=download_file(title, PLANCK_LIVINGSTON_LIGO_DATA_16k_URL,file_out)
+        else: print(f"❌ {title}: Skipping download for: {file_out}.")
+    except requests.exceptions.RequestException as e: dwnerr+=1; print(f"❌ {title}: Error occurred during download: {e}.")
+        
+    #GW170814 Event
+    try:
+        file_out=os.path.join(outdir, PLANCK_HANFORD_LIGO_GW170814_DATA_16k_FILENAME)
+        file_out_chk = Path(file_out)
+        if not file_out_chk.exists() or input(f"{file_out} exists. Overwrite? (y/n): ").strip().lower() == 'y':
+            dwnerr+=download_file(title, PLANCK_HANFORD_LIGO_GW170814_DATA_16k_URL,file_out)
+        else: print(f"❌ {title}: Skipping download for: {file_out}.")
+    except requests.exceptions.RequestException as e: dwnerr+=1; print(f"❌ {title}: Error occurred during download: {e}.")
 
+    try:
+        file_out=os.path.join(outdir, PLANCK_LIVINGSTON_LIGO_GW170814_DATA_16k_FILENAME)
+        file_out_chk = Path(file_out)
+        if not file_out_chk.exists() or input(f"{file_out} exists. Overwrite? (y/n): ").strip().lower() == 'y':
+            dwnerr+=download_file(title, PLANCK_LIVINGSTON_LIGO_GW170814_DATA_16k_URL,file_out)
+        else: print(f"❌ {title}: Skipping download for: {file_out}.")
+    except requests.exceptions.RequestException as e: dwnerr+=1; print(f"❌ {title}: Error occurred during download: {e}.")
 
-    except requests.exceptions.RequestException as e:
-        print(f"❌ {title}: Error occurred during download: {e}.")
-        dwnerr+=1
+    try:
+        file_out=os.path.join(outdir, PLANCK_VIRGO_LIGO_GW170814_DATA_16k_FILENAME)
+        file_out_chk = Path(file_out)
+        if not file_out_chk.exists() or input(f"{file_out} exists. Overwrite? (y/n): ").strip().lower() == 'y':
+            dwnerr+=download_file(title,PLANCK_VIRGO_LIGO_GW170814_DATA_16k_URL,file_out)
+        else: print(f"❌ {title}: Skipping download for: {file_out}.")
+    except requests.exceptions.RequestException as e: dwnerr+=1; print(f"❌ {title}: Error occurred during download: {e}.")
+    #GW170814 Event
 
     try:
         file_out=os.path.join(outdir, PLANCK_CMB_FITS_DATA_FILENAME)
         file_out_chk = Path(file_out)
         if not file_out_chk.exists() or input(f"{file_out} exists. Overwrite? (y/n): ").strip().lower() == 'y':
-            dwnerr+=download_file(title,PLANCK_CMB_FITS_DATA_URL,file_out)
-        else:
-            print(f"❌ {title}: Skipping download for: {file_out}.")
+            dwnerr+=download_file(title, PLANCK_CMB_FITS_DATA_URL,file_out)
+        else: print(f"❌ {title}: Skipping download for: {file_out}.")
+    except requests.exceptions.RequestException as e: dwnerr+=1; print(f"❌ {title}: Error occurred during download: {e}.")
 
-    except requests.exceptions.RequestException as e:
-        print(f"❌ {title}: Error occurred during download: {e}.")
-        dwnerr+=1
-
-
-    if(dwnerr>0):
-        print(f"❌ {title}: Finished, but failed to retrieve the: {title}.")
-    else:
-        print(f"✅ {title}: Finished, All files necessary downloaded for: {title}.")
+    if(dwnerr>0): print(f"❌ {title}: Finished, but failed to retrieve the: {title}.")
+    else: print(f"✅ {title}: Finished, All files necessary downloaded for: {title}.")
 
 
 if __name__ == "__main__":

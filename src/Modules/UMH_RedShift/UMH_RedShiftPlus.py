@@ -8,7 +8,7 @@ Date: July 2025
 
 Implements the low-z calibration and Pantheon+ redshift/time-dilation
 analysis described in:
-  A. Dodge, "Pantheon+ and Redshift Validation of the Ultronic Medium Hypothesis (UMH)", 2025.
+  A. Dodge, "Pantheon+ and Redshift Observational Analysis of the UMH Redshift Formulation", Reports in Advances of Physical Sciences 8 (2026) 2650012, DOI: 10.1142/S242494242650012X.
 
 Description:
   Tests whether a RedShift under Ultronic Medium can occur without Universe expansion.
@@ -48,6 +48,14 @@ def get_default_config():
         "VPEC": 200, # km/s
 
         "H0": 70, # Hubble constant in km/s/Mpc
+
+        # Transmission-coefficient selection:
+        # "fixed"     = require and use PANTHEON_BETA1_FIXED/PANTHEON_BETA2_FIXED
+        # "calibrate" = ignore fixed values and recover beta1,beta2 from Pantheon+
+        # "auto"      = use fixed values when both are supplied; otherwise recover them
+        "BETA_MODE": "auto",
+        "PANTHEON_BETA1_FIXED": 0.432,
+        "PANTHEON_BETA2_FIXED": -0.270,
 
         "PANTHEON_DATA_COLUMNS":["CID","IDSURVEY","zHD","zHDERR","zCMB","zCMBERR","zHEL","zHELERR","m_b_corr","m_b_corr_err_DIAG","MU_SH0ES","MU_SH0ES_ERR_DIAG","CEPH_DIST","IS_CALIBRATOR","USED_IN_SH0ES_HF","c","cERR","x1","x1ERR","mB","mBERR","x0","x0ERR","COV_x1_c","COV_x1_x0","COV_c_x0","RA","DEC","HOST_RA","HOST_DEC","HOST_ANGSEP","VPEC","VPECERR","MWEBV","HOST_LOGMASS","HOST_LOGMASS_ERR","PKMJD","PKMJDERR","NDOF","FITCHI2","FITPROB","m_b_corr_err_RAW","m_b_corr_err_VPEC","biasCor_m_b","biasCorErr_m_b","biasCor_m_b_COVSCALE","biasCor_m_b_COVADD"],
         "PANTHEON_DATA_FILE":os.path.join(base, "Output", "PantheonData", "PantheonPlus_SH0ES.dat"),
@@ -486,6 +494,31 @@ def fit_M_beta_given_delta(z, mb_corr, C, delta_fixed, a, s=0.0, b=0.0, c_=0.0, 
         chi2=chi2, dof=dof, mu_model=mu)
 
 
+def dL_lcdm_flat_grid(z_grid, H0=70.0, Omega_m=0.333, c_kms=299792.458):
+    """
+    Flat ΛCDM luminosity distance in Mpc on a sorted redshift grid. Integrates from z=0, matching the Pantheon+ comparison code.
+    """
+    z_grid = np.asarray(z_grid, float)
+    if np.any(np.diff(z_grid) < 0): raise ValueError("z_grid must be sorted in ascending order.")
+    # Prepend z=0 so the cumulative integral starts from the origin.
+    z_aug = np.concatenate(([0.0], z_grid))
+    Ez = np.sqrt(Omega_m * (1.0 + z_aug)**3 + (1.0 - Omega_m))
+    inv_E = 1.0 / Ez
+    integ = np.zeros_like(z_aug)
+    dz = np.diff(z_aug)
+    integ[1:] = np.cumsum(0.5 * dz * (inv_E[1:] + inv_E[:-1]))
+    dC_aug = (c_kms / H0) * integ; dL_aug = (1.0 + z_aug) * dC_aug
+    return dL_aug[1:]
+
+
+def dL_umh_nonexp_grid(z_grid, a, beta1, beta2, delta=1.0):
+    """
+    UMH luminosity distance in Mpc for the preferred non-expansion model.
+    """
+    z_grid = np.asarray(z_grid, float); d_vals = np.log1p(z_grid) / a; Tvals = make_Texp(beta1, beta2)(z_grid)
+    return d_vals * (1.0 + z_grid)**((1.0 + delta) / 2.0) / np.sqrt(Tvals)
+
+
 def run(config_overrides=None):
     config = get_default_config()
     if config_overrides: config.update(config_overrides)
@@ -564,7 +597,7 @@ def run(config_overrides=None):
 
     
     # ========= UMH vs Hubble plot suite (Pantheon+ calibrators) =========
-    cap = "(green/orange curves are diagnostics with β fixed; preferred model is δ=1 with profiled β)"
+    cap = "(green/orange diagnostic comparison: β=0 versus δ=1 with β recovered in the transmission-calibration stage)"
 
 
     plt.figure(figsize=(9,6))
@@ -660,7 +693,7 @@ def run(config_overrides=None):
     mu_delta_only = mu_delta_only + M_do
 
 
-    # (b) 'δ=1, β profiled' -> β1 = γ - 1, β2 = fitted
+    # (b) Diagnostic recovery: δ=1, β recovered -> β1 = γ - 1, β2 = fitted
     beta1 = res_g['gamma'] - 1.0
     L     = np.log1p(z_sn)
     B1    = 2.5/np.log(10.0) * L
@@ -671,9 +704,9 @@ def run(config_overrides=None):
     plt.figure(figsize=(9,6))
     plt.scatter(z_sn, mb_corr, s=9, alpha=0.8, label="Pantheon+ SNe (SN-only)")
     plt.plot(z_sn[sort], mu_delta_only[sort], lw=2, label="UMH (δ free, β=0)")
-    plt.plot(z_sn[sort], mu_beta[sort],      lw=2, ls="--", label="UMH (δ=1, β profiled)")
+    plt.plot(z_sn[sort], mu_beta[sort],      lw=2, ls="--", label="UMH diagnostic (δ=1, β recovered)")
     plt.xlabel("Redshift z"); plt.ylabel("Distance Modulus μ")
-    plt.title("UMH RedShift: Pantheon+ Hubble diagram — δ vs profiled β (no expansion)")
+    plt.title("UMH RedShift: Pantheon+ Hubble diagram — δ vs recovered β (diagnostic)")
     plt.figtext(0.5, 0.01, cap, ha="center", fontsize=9)
 
     plt.grid(True, alpha=0.3); plt.legend(loc="lower right", bbox_to_anchor=(1.0, 0.0)); plt.tight_layout()
@@ -709,12 +742,93 @@ def run(config_overrides=None):
     jbest = int(np.argmin(chi2s))
 
     res_beta = fit_M_beta_given_delta(z_sn, mb_corr, Csel, delta_fixed=1.0, a=a_hat)
-    print(f"[δ=1] β1={res_beta['beta1']:.3f}±{res_beta['beta1_err']:.3f}, "
+    print(f"[δ=1 recovery] β1={res_beta['beta1']:.3f}±{res_beta['beta1_err']:.3f}, "
           f"β2={res_beta['beta2']:.3f}±{res_beta['beta2_err']:.3f}, "
           f"χ²/dof={res_beta['chi2']/res_beta['dof']:.3f}")
 
-    # χ²/dof for δ=1 with β profiled
-    chi2dof_prof = res_beta["chi2"] / res_beta["dof"]
+    # ===== Select fixed vs recovered transmission coefficients =====
+    beta_mode = str(config.get("BETA_MODE", "auto")).strip().lower()
+    beta1_fixed = config.get("PANTHEON_BETA1_FIXED", None)
+    beta2_fixed = config.get("PANTHEON_BETA2_FIXED", None)
+
+    have_beta1 = beta1_fixed is not None
+    have_beta2 = beta2_fixed is not None
+
+    if have_beta1 != have_beta2:
+        raise ValueError(
+            "PANTHEON_BETA1_FIXED and PANTHEON_BETA2_FIXED must either "
+            "both be supplied or both be omitted."
+        )
+
+    if beta_mode == "fixed":
+        if not (have_beta1 and have_beta2):
+            raise ValueError(
+                "BETA_MODE='fixed' requires both PANTHEON_BETA1_FIXED "
+                "and PANTHEON_BETA2_FIXED."
+            )
+        beta1_pref = float(beta1_fixed)
+        beta2_pref = float(beta2_fixed)
+        beta_source = "fixed"
+
+    elif beta_mode == "calibrate":
+        beta1_pref = float(res_beta["beta1"])
+        beta2_pref = float(res_beta["beta2"])
+        beta_source = "calibrated_from_pantheon"
+
+    elif beta_mode == "auto":
+        if have_beta1 and have_beta2:
+            beta1_pref = float(beta1_fixed)
+            beta2_pref = float(beta2_fixed)
+            beta_source = "fixed"
+        else:
+            beta1_pref = float(res_beta["beta1"])
+            beta2_pref = float(res_beta["beta2"])
+            beta_source = "calibrated_from_pantheon"
+
+    else:
+        raise ValueError("BETA_MODE must be 'fixed', 'calibrate', or 'auto'.")
+
+    T_pref = make_Texp(beta1_pref, beta2_pref)
+
+    print(
+        f"[beta selection] mode={beta_mode}, source={beta_source}: "
+        f"β1={beta1_pref:.4f}, β2={beta2_pref:.4f}"
+    )
+
+    # Full-sample selected-beta path: only M is profiled here.
+    mu_pref = mu_umh_of_z_nonexp(
+        z_sn, a=a_hat, s=0.0, b=0.0, c_=0.0, d0=1.0,
+        delta=1.0, kappa=1.0, T_of_z=T_pref
+    )
+    chi2_pref, M_pref = chi2_and_M_best(mb_corr, mu_pref, Csel)
+    dof_pref = max(len(z_sn) - 1, 1)
+    print(
+        f"[selected β final path] χ²={chi2_pref:.2f}, dof={dof_pref}, "
+        f"χ²/dof={chi2_pref/dof_pref:.4f}, M={M_pref:.5f}"
+    )
+
+    # ===== High-z validation after excluding low-z calibration region =====
+    # Alpha and selected beta values are held fixed; only M is re-profiled on each subset.
+    print(f"\n[high-z validation] fixed α, selected β ({beta_source}), δ=1; profile only M")
+    highz_rows = []
+    for zcut in (0.10, 0.15, 0.20):
+        mcut = z_sn > zcut; z_cut = z_sn[mcut];  mb_cut = mb_corr[mcut]; C_cut = Csel[np.ix_(mcut, mcut)]
+        mu_cut = mu_umh_of_z_nonexp(z_cut, a=a_hat, s=0.0, b=0.0, c_=0.0, d0=1.0, delta=1.0, kappa=1.0, T_of_z=T_pref)
+        chi2_cut, M_cut = chi2_and_M_best(mb_cut, mu_cut, C_cut)
+        dof_cut = max(len(z_cut) - 1, 1)
+        chi2_dof_cut = chi2_cut / dof_cut
+        highz_rows.append((zcut, len(z_cut), chi2_cut, dof_cut, chi2_dof_cut, M_cut))
+        print(f" z > {zcut:.2f}: N={len(z_cut)}, chi2={chi2_cut:.2f}, dof={dof_cut}, chi2/dof={chi2_dof_cut:.4f}, M={M_cut:.4f}")
+    # Save table for manuscript/reviewer response
+    highz_path = f"{file_path}_HighZ_Validation.csv"
+    np.savetxt(highz_path, np.array(highz_rows, dtype=float), delimiter=",", header="z_cut,N,chi2,dof,chi2_dof,M_profiled", comments="")
+    print(f"[high-z validation] saved: {highz_path}")
+
+
+
+
+    # χ²/dof for δ=1 with the selected beta path
+    chi2dof_prof = chi2_pref / dof_pref
 
     plt.figure(figsize=(8,5))
     # existing scan (β=0)
@@ -722,12 +836,12 @@ def run(config_overrides=None):
     # mark δ = 1
     plt.axvline(1.0, color="k", ls=":", lw=1)
     # add the Option-1 result as a dot at δ=1
-    plt.scatter([1.0], [chi2dof_prof], s=70, zorder=3, label=r"δ=1, β profiled")
+    plt.scatter([1.0], [chi2dof_prof], s=70, zorder=3, label=rf"δ=1, β selected ({beta_source})")
     plt.annotate(fr"{chi2dof_prof:.3f}", xy=(1.0, chi2dof_prof),
                  xytext=(1.02, chi2dof_prof+0.01), arrowprops=dict(arrowstyle="-", lw=0.8))
     plt.xlabel(r"Time-dilation exponent $\delta$ in $D_L \propto (1+z)^{(1+\delta)/2}$")
     plt.ylabel(r"$\chi^2/\mathrm{dof}$")
-    plt.title(f"{title}: δ-scan (β=0) with δ=1, β profiled overlay")
+    plt.title(f"{title}: δ-scan (β=0) with δ=1, selected-β overlay")
     plt.legend(loc="upper right"); plt.tight_layout(); plt.grid(True, alpha=0.3)
     plt.savefig(f"{file_path}_delta_scan_beta_profiled_vs_fixed.png", dpi=dpi); plt.close()
 
@@ -766,16 +880,16 @@ def run(config_overrides=None):
     _, M_do = chi2_and_M_best(mb_corr, mu_delta, Csel)     # profile M
     mu_delta += M_do
 
-    # --- (b) δ=1, β profiled (already solved)
-    mu_beta = res_beta["mu_model"]
+    # --- (b) δ=1 with selected beta values
+    mu_beta = mu_pref + M_pref
 
     # --- residual vectors
     res_a = mb_corr - mu_delta
     res_b = mb_corr - mu_beta
 
-    # running median (windowed) for the profiled-β case
+    # running median (windowed) for the selected-beta case
     order = np.argsort(z_sn)
-    zs, rs = z_sn[order], (mb_corr - res_beta["mu_model"])[order]
+    zs, rs = z_sn[order], res_b[order]
 
     s_rs = pd.Series(rs)
     med = s_rs.rolling(window=75, center=True, min_periods=30).median().to_numpy()
@@ -783,8 +897,8 @@ def run(config_overrides=None):
 
     plt.figure(figsize=(10,5.8))
     plt.scatter(z_sn, mb_corr - (mu0 + A*delta_best_scan + M_do), s=10, alpha=0.55, label=r"δ free, β=0 (best δ)")
-    plt.scatter(z_sn, rs, s=10, alpha=0.55, label=r"δ=1, β profiled")
-    plt.plot(zmid, med, lw=2, label="running median (δ=1, β profiled)")
+    plt.scatter(z_sn, rs, s=10, alpha=0.55, label=rf"δ=1, β selected ({beta_source})")
+    plt.plot(zmid, med, lw=2, label=f"running median (δ=1, β {beta_source})")
     plt.axhline(0, color="k", lw=1)
     plt.ylim(-0.6, 0.6)                    # symmetric limits read cleaner
     plt.xlabel("Redshift z"); plt.ylabel(r"Residual $\mu_{\rm data}-\mu_{\rm model}$ (mag)")
@@ -799,7 +913,7 @@ def run(config_overrides=None):
     N = len(res_b)
 
     plt.figure(figsize=(9,5.4))
-    n, bins, _ = plt.hist(res_b, bins=40, density=True, alpha=0.45, label=f"Residuals (δ=1, β profiled), N={N}")
+    n, bins, _ = plt.hist(res_b, bins=40, density=True, alpha=0.45, label=f"Residuals (δ=1, β {beta_source}), N={N}")
     x = np.linspace(bins[0], bins[-1], 400)
     plt.plot(x, (1/(sigma_res*np.sqrt(2*np.pi)))*np.exp(-0.5*((x-mu_res)/sigma_res)**2),
              lw=2, label=fr"Normal fit: $\mu={mu_res:.3f}$, $\sigma={sigma_res:.3f}$")
@@ -831,7 +945,7 @@ def run(config_overrides=None):
     xc, med, ylo, yhi, nbin = bin_equal_count(z_sn, res_b, nbins=14)
 
     plt.figure(figsize=(10,5.8))
-    plt.errorbar(xc, med, yerr=[ylo, yhi], fmt="o", ms=5, capsize=2, label=r"median $\pm$68% (δ=1, β profiled)")
+    plt.errorbar(xc, med, yerr=[ylo, yhi], fmt="o", ms=5, capsize=2, label=rf"median $\pm$68% (δ=1, β {beta_source})")
     ax = plt.gca()
     for x, n in zip(xc, nbin):
         ax.text(x, 0.005, f"{n}", ha="center", va="bottom", fontsize=8, color="0.4", alpha=0.6)   # smaller, grey, semi-transparent
@@ -896,6 +1010,69 @@ def run(config_overrides=None):
     
     plt.savefig(f"{file_path}_Time_Stretch.png", dpi=dpi); plt.close()
 
+
+    # ===== UMH vs flat ΛCDM fractional luminosity-distance difference =====
+    z_plot = np.linspace(0.001, np.nanmax(z_sn), 1000)
+    dL_umh = dL_umh_nonexp_grid(z_plot, a=a_hat, beta1=beta1_pref, beta2=beta2_pref, delta=1.0)
+    dL_lcdm = dL_lcdm_flat_grid(z_plot, H0=c_kms*a_hat, Omega_m=0.333, c_kms=c_kms)
+    frac_diff = (dL_umh - dL_lcdm) / dL_lcdm; delta_mu = 5.0 * np.log10(dL_umh / dL_lcdm)
+    frac_path = f"{file_path}_UMH_LCDM_Fractional_Difference.csv"
+    np.savetxt(frac_path, np.column_stack([z_plot, dL_umh, dL_lcdm, frac_diff, delta_mu]), delimiter=",",
+        header="z,dL_UMH_Mpc,dL_LCDM_Mpc,frac_diff,delta_mu_mag", comments="")
+
+    plt.figure(figsize=(9, 5.5))
+    mask_plot = z_plot > 0.02
+    plt.plot(z_plot[mask_plot], 100.0 * frac_diff[mask_plot], lw=2)
+    plt.axhline(0.0, color="k", lw=1, ls="--")
+    plt.axvline(0.10, ls="--", alpha=0.5)
+    plt.xlabel("Redshift z")
+    plt.ylabel(r"$100\times(d_{L,\mathrm{UMH}}-d_{L,\Lambda\mathrm{CDM}})/d_{L,\Lambda\mathrm{CDM}}$ [%]")
+    plt.title(r"UMH vs flat $\Lambda$CDM fractional luminosity-distance difference")
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(f"{file_path}_UMH_LCDM_Fractional_Difference.png", dpi=dpi)
+    plt.close()
+
+    plt.figure(figsize=(9, 5.5))
+    plt.plot(z_plot, delta_mu, lw=2)
+    plt.axhline(0.0, color="k", lw=1, ls="--")
+    plt.xlabel("Redshift z")
+    plt.ylabel(r"$\Delta\mu(z)=\mu_{\mathrm{UMH}}-\mu_{\Lambda\mathrm{CDM}}$ [mag]")
+    plt.title(r"UMH vs flat $\Lambda$CDM distance-modulus difference")
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(f"{file_path}_UMH_LCDM_DeltaMu.png", dpi=dpi)
+    plt.close()
+
+    print(f"[UMH vs LCDM] saved: {frac_path}")
+
+    # ===== Compact summary for reproducibility/public release =====
+    summary_path = f"{file_path}_Summary.json"
+    summary = {
+        "dataset": "Pantheon+ SN-only",
+        "N": int(len(z_sn)),
+        "alpha_1_per_Mpc": float(a_hat),
+        "alpha_sigma_1_per_Mpc": float(sigma_a),
+        "alpha_source": "Pantheon+/Cepheid low-z calibration",
+        "beta_mode": beta_mode,
+        "beta_source": beta_source,
+        "beta1_recovered": float(res_beta["beta1"]),
+        "beta1_recovered_err": float(res_beta["beta1_err"]),
+        "beta2_recovered": float(res_beta["beta2"]),
+        "beta2_recovered_err": float(res_beta["beta2_err"]),
+        "beta1_selected": float(beta1_pref),
+        "beta2_selected": float(beta2_pref),
+        "chi2_selected": float(chi2_pref),
+        "dof_selected": int(dof_pref),
+        "chi2_dof_selected": float(chi2_pref / dof_pref),
+        "M_selected": float(M_pref),
+        "delta_beta0_best": float(deltas[jbest]),
+        "chi2_delta_beta0_best": float(chi2s[jbest])
+    }
+    with open(summary_path, "w") as f:
+        json.dump(summary, f, indent=2)
+    print("Saved:", summary_path)
+
     # ========= end plot suite =========
 
 
@@ -943,7 +1120,9 @@ def run(config_overrides=None):
 
 
         def save_redshift_calibration(file_path, H0, z, z_err, d_Mpc, d_err, ln1pz, sigma_L,
-            alpha, alpha_err, intercept, info, res_beta):
+            alpha, alpha_err, intercept, info, res_beta,
+            beta_mode, beta_source, beta1_pref, beta2_pref,
+            chi2_pref, dof_pref, M_pref):
 
             csv_path  = f"{file_path}_Calibration_Data.csv"
             json_path = f"{file_path}_Calibration_Fit.json"
@@ -972,18 +1151,21 @@ def run(config_overrides=None):
                 },
                 "peculiar_velocity_floor_kms": float(vpec_kms),
 
-                # profiled M and betas (with errors)
-                "M_best": float(res_beta["M"]),
-                "M_err": float(res_beta.get("M_err", np.nan)),
-                "beta1": float(res_beta["beta1"]),
-                "beta1_err": float(res_beta["beta1_err"]),
-                "beta2": float(res_beta["beta2"]),
-                "beta2_err": float(res_beta["beta2_err"]),
+                # beta recovery and selected final-path provenance
+                "beta_mode": beta_mode,
+                "beta_source": beta_source,
+                "beta1_recovered": float(res_beta["beta1"]),
+                "beta1_recovered_err": float(res_beta["beta1_err"]),
+                "beta2_recovered": float(res_beta["beta2"]),
+                "beta2_recovered_err": float(res_beta["beta2_err"]),
+                "beta1_selected": float(beta1_pref),
+                "beta2_selected": float(beta2_pref),
 
-                # goodness of fit
-                "chi2": float(res_beta["chi2"]),
-                "dof": int(res_beta["dof"]),
-                "chi2_dof": float(res_beta["chi2"] / res_beta["dof"]),
+                # selected final-path result
+                "M_best": float(M_pref),
+                "chi2": float(chi2_pref),
+                "dof": int(dof_pref),
+                "chi2_dof": float(chi2_pref / dof_pref),
             }
 
             payload["data"] = {
@@ -1027,7 +1209,14 @@ def run(config_overrides=None):
             alpha_err     = alpha_err,
             intercept     = b0,
             info          = info,
-            res_beta = res_beta)
+            res_beta = res_beta,
+            beta_mode = beta_mode,
+            beta_source = beta_source,
+            beta1_pref = beta1_pref,
+            beta2_pref = beta2_pref,
+            chi2_pref = chi2_pref,
+            dof_pref = dof_pref,
+            M_pref = M_pref)
 
         if(USE_HUBER):
             print(f"[CAL] α = {a_hat:.6e} ± {sigma_a:.2e} 1/Mpc "
