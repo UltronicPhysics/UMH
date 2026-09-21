@@ -1,202 +1,257 @@
-UMH Gravitational-Wave (LIGO) Simulation — README
-===============================================
+UMH Gravitational-Wave (LIGO/Virgo) Simulation — README
+=========================================================
+
+Publication
+-----------
+
+Andrew S. Dodge,
+"Forward Generation of the GW150914 Gravitational-Wave Signal
+from a Constrained Propagation Model,"
+Reports in Advances of Physical Sciences (2026).
+
+DOI: 10.1142/S2424942426500143
+
+This directory contains the generator and comparison code associated with the
+published forward-generation analysis. The published configurations use
+GW150914 as the primary event and GW170814 as an independent secondary-event
+validation. Experimental and post-publication extensions are identified
+separately in the source code and are not part of the reported publication
+configuration unless explicitly enabled.
 
 Purpose
 -------
-This simulation implements the Ultronic Medium Hypothesis (UMH) gravitational-wave
-framework and applies it to the GW150914 event. The goal is NOT to compete with or
-replace General Relativity (GR), nor to optimize waveform fits within GR-based
-pipelines.
 
-Instead, this simulation demonstrates that when cosmological *mapping assumptions*
-(expansion, ΛCDM priors) are removed and replaced with a tension-based UMH mapping
-(calibrated independently from Pantheon+), gravitational-wave observables
-(frequency, phase, time dilation, amplitude) remain self-consistent across detectors
-and produced a qualifying LIGO type observed Chirp.
+This simulation implements the Ultronic Medium Hypothesis (UMH)
+gravitational-wave forward-generation framework used in the published analysis.
 
-The comparison is therefore with **GR pipelines**, not with GR itself.
+The goal is not to replace General Relativity (GR) or to reproduce a standard
+template-bank parameter-estimation pipeline. In the published analysis, the
+leading-order chirp relation is treated as the recovered GR-order large-scale
+limit of the UMH formulation.
+
+The specific test is whether a source–observer propagation relation calibrated
+independently from Pantheon+ Type Ia supernova data can be applied unchanged in
+the gravitational-wave domain while preserving consistency across frequency
+evolution, phase accumulation, time dilation, amplitude normalization, detector
+projection, and post-merger relaxation.
+
+The generated waveform is produced before comparison with detector strain. The
+comparison then uses one global event-time/polarity registration anchor for the
+network, after which the remaining detector timing is fixed by geometry.
 
 Core UMH ingredients
 --------------------
 
-1) **Tension-based cosmological mapping (no expansion)**
-   - UMH does not interpret redshift, time dilation, or amplitude scaling as arising
-     from metric expansion.
-   - A global **tension field** in a Lorentz-consistent medium governs the
-     source–observer mapping.
-   - This mapping is calibrated *once* from Pantheon+ supernova data and then
-     transported unchanged to gravitational-wave observables.
+1) Independent source–observer propagation calibration
+   - The propagation relation is calibrated once from Pantheon+ supernova data.
+   - The gravitational-wave analysis does not recalibrate the propagation
+     relation using LIGO/Virgo strain.
+   - The event-level UMH effective luminosity distance D_L^UMH is supplied as a
+     source-distance input to the forward generator.
+   - The corresponding UMH propagation redshift is obtained from the same
+     Pantheon+-calibrated source–observer mapping used in the published paper.
 
-2) **Forward UMH chirp generation (mechanism-first)**
-   - The UMH chirp generator produces an intrinsic inspiral → merger → ringdown
-     waveform from UMH medium dynamics.
-   - No phenomenological waveform families are used.
-   - No per-detector fitting, mass/spin maximization, phase warping, or template banks
-     are involved.
-   - The resulting waveform is a **forward prediction**, not a best fit.
+2) Leading-order forward chirp generation
+   - The published GW150914 and GW170814 configurations use the leading-order
+     0PN-equivalent chirp evolution recovered as the GR-order limit of the UMH
+     formulation.
+   - Higher-order PN machinery may remain available for separate diagnostic or
+     extension studies, but it is disabled for the reported publication
+     configurations.
+   - No template bank or phenomenological waveform-family search is used in the
+     published forward-generation test.
 
-3) **Frequency evolution**
-   - The inspiral obeys the leading-order chirp scaling:
-         df/dt ∝ f^(11/3),   f ∝ (t_c − t)^(−3/8)
-   - This scaling is shared with GR at Newtonian order and reflects generic
-     radiation-reaction behavior, not GR-specific ontology.
-   - Higher-order PN terms may be included for diagnostic comparison only and are
-     disabled in strict UMH demonstrations.
+3) Single global amplitude normalization
+   - The strain normalization is fixed from the source-frame chirp mass,
+     source-frame reference frequency, and the UMH effective luminosity
+     distance D_L^UMH.
+   - Redshift, time-dilation, and transmission effects enter once through the
+     fixed source–observer mapping.
+   - No detector-specific amplitude scaling is applied.
 
-4) **Detector projection (geometry only)**
-   - The intrinsic UMH waveform is projected into Hanford and Livingston using:
-       • antenna pattern geometry,
-       • a single global time reference,
-       • a single polarity convention.
-   - Relative detector timing is constrained by geometry; detectors are NOT fit
-     independently.
+4) Detector projection and network timing
+   - A single intrinsic source waveform is projected through the standard
+     antenna response of each active detector.
+   - Detector differences arise from antenna response and geometric arrival
+     delay.
+   - One global event-time/polarity registration anchor is established for the
+     detector network.
+   - After that anchor is fixed, non-anchor detector timing is determined from
+     the detector geometry; no detector-specific lag optimization is used for
+     the reported comparison.
+
+5) Post-merger relaxation
+   - The published analysis treats the ringdown as a constrained UMH
+     relaxation process.
+   - The remnant frequency is obtained from the UMH confinement/radial
+     operator construction, whose macroscopic limit recovers the
+     GR-limit (2,2,0) reference scale.
+   - The fast publication implementation uses a surrogate of the solved
+     UMH radial outgoing-boundary operator; the surrogate is not fitted
+     to LIGO/Virgo strain.
+   - The resulting mode is propagated through the same fixed
+     Pantheon+-calibrated source-observer mapping.
+   - No event-fitted QNM overtone decomposition is used.
 
 Code components
 ---------------
 
 A) UMH_Chirp_Generator.py
-   - Generates the intrinsic UMH gravitational-wave strain.
-   - Outputs time-domain strain, instantaneous frequency, phase, and metadata.
-   - Visualization band limits (if present) are explicitly marked as VIZ-ONLY and do
-     not affect waveform generation.
+   - Generates the intrinsic UMH inspiral–merger–ringdown waveform before any
+     comparison with detector strain.
+   - Outputs detector-projected strain arrays, analytic frequency/phase
+     histories, source and remnant metadata, propagation quantities, and
+     reproducibility metadata.
+   - The published event configurations use the analytic UMH 0PN-equivalent
+     branch with non-spinning progenitors.
+   - Soliton, spin/precession, full radial-operator solver, and other
+     extension branches are experimental or post-publication capabilities
+     unless explicitly identified as part of a publication profile.
+   - The publication ringdown path uses the fast UMH radial-operator
+     surrogate/recovered-GR-limit construction described in the source,
+     not a detector-strain fit.
+   - Visualization-only operations do not modify the stored physics strain
+     arrays.
 
 B) UMH_Ligo_Compiler.py
-   - Loads publicly available LOSC strain data for GW150914.
-   - Applies deterministic conditioning (bandpass, whitening) equally to data and
-     UMH waveform.
-   - Performs **diagnostic** comparisons only:
+   - Loads public GWOSC strain data.
+   - Applies the same conditioning band and detector-specific PSD whitening to
+     the observed strain and the forward-generated UMH waveform.
+   - Establishes the global registration anchor and applies geometry-locked
+     timing to the remaining detectors.
+   - Produces fixed-registration diagnostics including:
        • time-domain overlays,
-       • spectrograms,
        • residuals,
-       • windowed correlations.
-   - No detector-specific tuning is performed in strict mode.
+       • spectrograms,
+       • amplitude-spectral-density diagnostics,
+       • merger-window correlations,
+       • instantaneous-frequency comparisons,
+       • fixed-assumption SNR diagnostics,
+       • JSON summary/provenance records.
+   - Under PHYSICS_STRICT, no fine time stretching, detector-specific polarity
+     changes, detector-specific lag maximization, or applied amplitude fitting
+     is used.
 
-Pipeline philosophy (important)
--------------------------------
+Published comparison protocol
+-----------------------------
 
-• This is NOT a matched-filter search.
-• This does NOT maximize likelihood over waveform families.
-• This does NOT claim superior statistical detection power.
+1) Load event data
+   - Public calibrated strain data are loaded for the active detector network.
+   - GW150914 uses Hanford and Livingston.
+   - GW170814 uses Hanford, Livingston, and Virgo.
 
-Instead, the question being tested is:
+2) Generate the UMH waveform
+   - The waveform is generated independently of detector strain.
+   - Detector data do not feed back into the waveform-generation stage.
 
-   “If a physically real, Lorentz-consistent medium with a global tension law is postulated, 
-    can that medium—using only its intrinsic dynamics and a single externally calibrated 
-    mapping—generate the observed gravitational-wave phenomenology, without invoking metric 
-    expansion, dark matter, or waveform-family optimization?”
+3) Apply the fixed source–observer mapping
+   - The Pantheon+-calibrated mapping determines the propagation quantities
+     used by the generator.
+   - The same calibration is applied unchanged across the reported
+     gravitational-wave events.
 
-GW150914 analysis steps
-----------------------
+4) Condition observed and generated strain
+   - The same analysis band is applied to observed and generated strain.
+   - Whitening uses a detector-specific PSD estimated from off-source LIGO/Virgo
+     data and then applied unchanged to both observed and generated strain.
 
-1) **Load event data**
-   - GW150914 strain data are loaded from LOSC.
-   - A fixed event window is used (no sliding or optimization).
+5) Establish one network registration anchor
+   - A discovery/registration pass establishes one global event-time and
+     polarity convention for the detector network.
+   - This registration sets only the common event-time origin; it does not alter
+     the generated waveform shape.
 
-2) **Generate UMH waveform**
-   - UMH chirp is generated independently of detector data.
-   - No information from LIGO data feeds back into generation.
+6) Lock the remaining detectors by geometry
+   - Non-anchor detector timing is determined from the anchor plus geometric
+     propagation delay.
+   - No per-detector phase, amplitude, frequency, stretch, or lag adjustment is
+     applied in the reported strict comparison.
 
-3) **Apply cosmological mapping**
-   - Pantheon+-calibrated UMH tension mapping is applied to:
-       • frequency evolution,
-       • phase accumulation,
-       • time dilation,
-       • amplitude vs distance.
+7) Evaluate diagnostics
+   - Merger-window correlation.
+   - Fixed-assumption windowed SNR.
+   - Residual noise inflation.
+   - Instantaneous-frequency consistency.
+   - Time-domain and spectrogram morphology.
+   - Detector-network consistency.
 
-4) **Conditioning (symmetric)**
-   - Identical bandpass and whitening procedures are applied to:
-       • LIGO data,
-       • UMH waveform.
-   - Whitening uses Welch PSD with fixed parameters and a PSD floor.
-
-5) **Projection & alignment**
-   - One global time offset is applied.
-   - One polarity convention is chosen.
-   - No per-detector lag fitting or stretching in strict mode.
-
-6) **Diagnostics**
-   - Time-domain overlays and residuals.
-   - Time–frequency spectrograms.
-   - Windowed correlation metrics (reported, not optimized).
-
-What to look for in the outputs
--------------------------------
-
-Time-domain figures
--------------------
-• Whitened UMH vs LIGO strain overlays for H1 and L1.
-• Residual plots showing structure vs noise.
-• Clear inspiral-merger-ringdown morphology alignment without per-detector tuning.
-
-Spectrograms
-------------
-• Time–frequency ridges showing consistent chirp evolution.
-• Residual spectrograms indicating where structure remains or vanishes.
-
-Correlation diagnostics
------------------------
-• Windowed Pearson correlations computed under fixed rules.
-• Values reported for transparency; not maximized over free parameters.
-
-Key interpretation points
+Interpretation of the SNR
 -------------------------
 
-1) The GW150914 chirp does NOT uniquely force an expansion-based cosmology.
-2) GR local dynamics remain valid; the disagreement is with **pipeline assumptions**.
-3) A single, externally calibrated tension-based mapping can be applied consistently
-   to both supernovae and gravitational waves.
-4) The success of GR pipelines reflects descriptive flexibility, not necessarily
-   unique physical ontology.
+The reported SNR is a fixed-window, whitened, template-normalized inner-product
+diagnostic evaluated after the single global registration. It is not maximized
+over waveform families, phase, amplitude, or detector-specific lag and should
+not be interpreted as a replacement for the matched-filter detection statistic
+used in standard gravitational-wave searches.
 
-What this does NOT claim
------------------------
+What this analysis does not claim
+---------------------------------
 
-• This is NOT a replacement for GR.
-• This is NOT a detection pipeline.
-• This is NOT a claim of higher SNR than LIGO templates.
-• This is NOT a claim that GR waveforms are “wrong”.
+- It does not replace General Relativity.
+- It is not a gravitational-wave detection pipeline.
+- It does not perform Bayesian parameter inference or likelihood maximization.
+- It does not claim a higher SNR than standard LIGO/Virgo template pipelines.
+- It does not claim that standard GR waveform models are incorrect.
+- It does not uniquely recover all component masses, spins, or source
+  parameters from detector strain.
 
-It IS a demonstration that:
-• the observed inspiral–merger–ringdown structure can arise from a medium-based mechanism
-• cosmological interpretation is separable from local dynamics,
-• current pipelines implicitly hard-code expansion + ΛCDM,
-• UMH provides a coherent, mechanism-based alternative mapping.
+What the published analysis tests
+---------------------------------
 
-Reproducibility & knobs
-----------------------
+The published test asks whether the same independently calibrated UMH
+source–observer propagation relation can be transferred from the Pantheon+
+cosmological calibration to gravitational-wave forward generation without
+gravitational-wave-domain recalibration.
 
-• Strict mode:
-    - No per-detector fitting
-    - No stretch or lag optimization
-    - One global alignment only
+For GW150914, the paper reports a forward-generated waveform consistent with
+the observed inspiral–merger–ringdown morphology under the fixed registration
+and diagnostic criteria of the analysis.
 
-• Diagnostics only (reported, not applied):
-    - Envelope-based event time estimate
-    - Peak correlation lag
-    - Optional PN-term comparisons
+GW170814 is included as a secondary-event validation using the same
+forward-generation protocol, propagation calibration, detector-response
+formalism, and global-registration rules.
 
-• All configuration flags and processing steps are written to JSON summaries for
-  auditability.
+Reproducibility
+---------------
+
+The publication-facing configurations should preserve:
+
+- 0PN-equivalent inspiral evolution for the reported event runs,
+- non-spinning progenitor configuration,
+- fixed Pantheon+ propagation calibration,
+- event-level UMH effective luminosity-distance input,
+- one global detector-network registration anchor,
+- geometry-locked non-anchor detector timing,
+- no detector-specific amplitude fitting,
+- no detector-specific lag maximization,
+- no fine time stretching under PHYSICS_STRICT,
+- detector-specific off-source PSD estimation,
+- identical whitening of observed and generated strain with that PSD.
+
+All configuration flags and processing metadata are written to output summaries
+for auditability.
 
 Relationship to UMH_RedShiftPlus
 --------------------------------
 
-This simulation uses the SAME cosmological calibration philosophy as the UMH redshift
-study: a one-time Pantheon+ calibration applied unchanged to a different physical
-regime.
+This simulation uses the same source–observer propagation calibration developed
+in the companion Pantheon+ analysis. The calibration is performed independently
+of the gravitational-wave data and then imported as a fixed external input to
+the forward generator.
 
 See:
    UMH_RedShiftPlus.txt
-for the detailed derivation and validation of the tension-based distance–redshift
-mapping. :contentReference[oaicite:0]{index=0}
 
-Conceptual summary
-------------------
+for the detailed derivation and validation of the UMH distance–redshift and
+effective-luminosity-distance mapping.
 
-GR and QFT describe observations.
-UMH proposes the physical mechanism beneath those descriptions.
+Repository / archival notes
+----------------------------
 
-This gravitational-wave simulation shows that once the mechanism is specified,
-multiple observational domains (SN redshift and GW chirps) can be treated
-consistently without invoking expansion or dark matter.
+For a publication reproduction, use the tagged release and configuration files
+identified with the published article rather than experimental defaults that may
+be added later.
 
+The journal article cites the public UMH repository and its versioned Zenodo
+archive for the simulation configuration files, output data, and figures used in
+the reported analysis.

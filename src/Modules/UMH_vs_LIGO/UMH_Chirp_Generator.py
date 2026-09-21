@@ -12,47 +12,44 @@ with UMH_Ligo_Compiler and data/peer-review comparisons (e.g. GW150914).
 High-level design
 -----------------
 1. Optional UMH soliton source model
-   - When USE_SOLITON_FOR_ENVELOPE=True, evolve a 3D ultronic medium field
-     phi(x,y,z,t) with two orbiting "solitons" as a UMH-native source model.
+   - When SOURCE_ENGINE=soliton_umh or hybrid_umh, evolve a 3D ultronic medium field phi(x,y,z,t) with two orbiting "solitons" as a UMH-native source model.
    - A differential probe of phi defines a soliton-based amplitude trace A_raw_Sol.
-   - These soliton fields are UMH diagnostics only; they are never sampled
-     directly as detector strain.
+   - These soliton fields are UMH diagnostics only; they are never sampled directly as detector strain.
 
 2. Soliton-informed or analytic amplitude envelope
-   - Default GW150914-style runs set USE_SOLITON_FOR_ENVELOPE=False and use a
-     smooth analytic envelope driven by PN scaling.
-   - When enabled, the soliton probe defines a modulation A_raw_Sol → A_hist
-     that shapes the envelope multiplicatively without per-event tuning.
+   - Default GW150914-style runs set SOURCE_ENGINE=analytic_umh and use a smooth analytic envelope driven by PN scaling.
+   - When enabled, the soliton probe defines a modulation A_raw_Sol → A_hist that shapes the envelope multiplicatively without per-event tuning.
 
 3. Analytic phase and composite track
-   - f_GW(t) and phi_GW(t) are generated from a UMH_highorder_dfdt law using
-     GR 0–3.5 PN coefficients (GR limit of UMH), plus a C¹-attached ringdown.
+   - f_GW(t) and phi_GW(t) are generated using the leading-order 0PN-equivalent UMH chirp evolution used in the published analysis,
+     followed by the UMH post-merger relaxation/ringdown construction.
    - A single intrinsic track f_GW(t), phi_GW(t) is used for all detectors.
 
 4. Physics normalization (single global scale)
-   - If PHYSICS_NORM_ENABLE=True, one scalar gain G_amp is fixed at f_ref_obs by
-     the UMH quadrupole amplitude newtonian_h_at_f_umh[_fitted] using the
-     UMH tension–redshift law (UMH_z_tension). No per-detector tuning.
+   - If PHYSICS_NORM_ENABLE=True, one scalar gain G_amp is fixed by the UMH quadrupole amplitude evaluated at f_ref_src = (1+z_UMH) f_ref_obs,
+     using the source-frame chirp mass and the full UMH effective luminosity distance D_L^UMH from the Pantheon+-calibrated source--observer mapping.
+     No per-detector tuning is applied.
+
+#4. Physics normalization (single global scale)
+#   - If PHYSICS_NORM_ENABLE=True, one scalar gain G_amp is fixed at f_ref_obs by the UMH quadrupole amplitude newtonian_h_at_f_umh[_fitted] using the
+#     UMH tension–redshift law (UMH_z_tension). No per-detector tuning.
 
 5. Detector strains
-   - Detector-frame strains are built as:
-       h_det(t) = G_amp * A_composite(t - tau_det) * [F_plus * cos(phi_GW) + F_cross * sin(phi_GW)],
+   - Detector-frame strains are built as: h_det(t) = G_amp * A_composite(t - tau_det) * [F_plus * cos(phi_GW) + F_cross * sin(phi_GW)],
      using standard antenna patterns and geometric delays.
 
 Key clarity points
 ------------------
 - Soliton fields and A_raw_Sol are diagnostics of the ultronic medium.
-- The only arrays intended for quantitative comparison to LIGO/Virgo are
-  the stored strain_{det}(t) built from the analytic PN+ringdown track
+- The only arrays intended for quantitative comparison to LIGO/Virgo are the stored strain_{det}(t) built from the analytic PN+ringdown track
   with a single UMH-based normalization.
 - Visualization (noise, whitening, spectrograms) operates on copies only.
 """
 
-# NOTE FOR REVIEW:
-# - The 3D UMH soliton field (phi, A_raw) is used only as an internal UMH diagnostic.
+# - The 3D UMH soliton field (phi, A_raw) is currently only an internal UMH diagnostic, this is in the process of being built out to provide full simulation.
 # - The physically relevant waveforms for comparison to LIGO/Virgo are: strain_records[det_name]  (stored as strain_{det} in output)
 #   built from the analytic PN+ringdown track plus a single global UMH/GR- consistent normalization. 
-#   No detector-specific amplitude fudging is applied.
+#   No detector-specific amplitude rescaling is applied.
 # - Visualization helpers (noise injection, whitening, spectrograms, custom colormaps)
 #   NEVER modify the stored physics strain arrays.
 
@@ -89,15 +86,15 @@ def get_default_config(config_overrides=None):
 
         "Sites_Used":       {"Hanford", "Livingston"},
 
-        "M1_solar_src":      36.06,
-        "M2_solar_src":      35.18,
+        "M1_solar_src":      37.03,
+        "M2_solar_src":      35.40,
 
-        "distance_Mpc":     337.4,
+        "distance_Mpc":     336.25,
         
-        "ra_deg":            72.5,
-        "dec_deg":          -73.5,
+        "ra_deg":            67.49,
+        "dec_deg":          -72.34,
 
-        "pol_psi_deg":     -154.75,
+        "pol_psi_deg":      -64.75,
         
         # Binary inclination in degrees (0° = face-on, 90° = edge-on, 180° = face-off)
         "BINARY_IOTA_DEG": -120.25,
@@ -112,38 +109,76 @@ def get_default_config(config_overrides=None):
 
         "f_min_obs":         20.0000,                    # Minimum Frequency hz.
         
-        "USE_UMH_DFDT_PROFILE":        False,  # UMH Produces good results at 0pn, can be left False.
-        # NOTE: Only enable PN > 2.5 for diagnostic/comparison purposes.
-        # In UMH implementation, 3.0–3.5PN terms (derived from GR) actually
-        # worsen the UMH–LIGO match. This suggests that GR needs higher-order PN
-        # strong-field corrections to approximate behavior that UMH produces
-        # more naturally, so these settings are *not* used for the primary UMH fit.
+        "USE_UMH_DFDT_PROFILE":        False,  # UMH Produces good results at 0pn.
+        # Publication configuration: use the leading-order 0PN-equivalent
+        # UMH inspiral evolution reported in the paper.
+        # Higher-order GR-limit PN corrections are retained only for diagnostic and extension studies and are not enabled in the
+        # published GW150914/GW170814 runs.
         "UMH_DFDT_PN_PROFILE":          0.0,
-
-
         "USE_UMH_AMP_PN_PROFILE":      False,   # UMH Produces good results at 0pn, no Amplitude PN Necessary, for Diagnostic only.
-
         
         "UMH_RedShift_Calibration_File": os.path.join(base, "Output", "UMH_RedShift", "UMH_RedShift_Calibration_Fit.json"),
-
         
         # --- UMH frequency-redshift (detector time dilation) ---
         "APPLY_UMH_FREQ_REDSHIFT":      True,   # default ON → Use Src Obs effect to apply Pantheon+ Calibration Freq RedShift and Time Dilation.
-
-       
         "APPLY_UMH_AMPLITUDE_SCALING":  True,   # Use UMH Tension Pantheon+ Calibration for Amplitude scaling.
 
-
-        #All headline comparisons to GW150914 use the analytic UMH/PN track (USE_SOLITON_FOR_ENVELOPE=False). 
-        #Enabling USE_SOLITON_FOR_ENVELOPE introduces small, parameter-free fluctuations sourced by the soliton field; 
+        #All headline comparisons to GW150914 use the analytic UMH/PN track (SOURCE_ENGINE=analytic_umh). 
+        #Using soliton_umh, or hybrid_umh SOURCE_ENGINE introduces small, parameter-free fluctuations sourced by the soliton field; 
         #these are presented separately as candidate UMH microstructure, not used to fit the main chirp.
         #This is used to perform true medium wave simulations for upcoming research.
-        "USE_SOLITON_FOR_ENVELOPE":    False,
+        "SOURCE_ENGINE":      "analytic_umh",   # analytic_umh, soliton_umh, hybrid_umh
+    }
 
+    replica_gw170814 = {
+        # Source (GW150914-like; medians/typical)
+        "profile":          "replica_gw170814",
+
+        "event_utc":        (2017, 8, 14, 10, 30, 43.530),   # 2017-08-14 10:30:43
+
+        "Sites_Used":       {"Hanford", "Livingston", "Virgo"},
+
+        "M1_solar_src":       51.548,
+        "M2_solar_src":       22.052,
+
+        "distance_Mpc":       506.125,
+
+        "ra_deg":            359.10,
+        "dec_deg":           -80.10,
+
+        "pol_psi_deg":       168.6,
         
-        "USE_QNM_OVERTONE_ATTACH":     False, #QNM Overtone Diagnostics, current UMH Medium relaxation works better without this, for diagnostic.
-        "QNM_OVERTONE_LIST":       [0, 1, 2],
-        "QNM_OVERTONE_DECAY_RATIO":      0.3,
+        # Binary inclination in degrees (0° = face-on, 90° = edge-on, 180° = face-off)
+        "BINARY_IOTA_DEG":    67.0,
+
+        # If RINGDOWN_OVERRIDE is provided:
+        # - Merge it into any existing ringdown config.
+        # - These override-derived values become the *authoritative* f_rd_obs_Hz,
+        #   tau_rd_obs, f_merge_Hz used for both waveform construction AND metadata.
+        #   RINGDOWN_OVERRIDE its f_rd_obs_Hz / tau_rd_obs / f_merge_Hz replace the Q-based defaults.
+        #"RINGDOWN_OVERRIDE": {"f_rd_obs_Hz": 250.0, "tau_rd_obs": 0.004, "f_merge_Hz": 150.0},
+
+        "f_min_obs":         20.0000,                    # Minimum Frequency hz.
+        
+        "USE_UMH_DFDT_PROFILE":        False,  # UMH Produces good results at 0pn, can be left False.
+        # Publication configuration: use the leading-order 0PN-equivalent
+        # UMH inspiral evolution reported in the paper.
+        # Higher-order GR-limit PN corrections are retained only for diagnostic and extension studies and are not enabled in the published
+        # GW150914/GW170814 runs.
+        "UMH_DFDT_PN_PROFILE":          0.0,
+        "USE_UMH_AMP_PN_PROFILE":      False,   # UMH Produces good results at 0pn, no Amplitude PN Necessary, for Diagnostic only.
+        
+        "UMH_RedShift_Calibration_File": os.path.join(base, "Output", "UMH_RedShift", "UMH_RedShift_Calibration_Fit.json"),
+
+        # --- UMH frequency-redshift (detector time dilation) ---
+        "APPLY_UMH_FREQ_REDSHIFT":      True,   # default ON → Use Src Obs effect to apply Pantheon+ Calibration Freq RedShift and Time Dilation.       
+        "APPLY_UMH_AMPLITUDE_SCALING":  True,   # Use UMH Tension Pantheon+ Calibration for Amplitude scaling.
+
+        #All headline comparisons to GW170814 use the analytic UMH/PN track (SOURCE_ENGINE=analytic_umh). 
+        #Using soliton_umh, or hybrid_umh SOURCE_ENGINE introduces small, parameter-free fluctuations sourced by the soliton field; 
+        #these are presented separately as candidate UMH microstructure, not used to fit the main chirp.
+        #This is used to perform true medium wave simulations for upcoming research.
+        "SOURCE_ENGINE":      "analytic_umh",   # analytic_umh, soliton_umh, hybrid_umh
     }
 
     config = {
@@ -171,7 +206,25 @@ def get_default_config(config_overrides=None):
         "soliton_radius":    40.0000,                    # Initial Radius between M1_solar_src and M2_solar_src.
         "BINARY_IOTA_DEG":     164.0,                    # Binary inclination in degrees (0° = face-on, 90° = edge-on, 180° = face-off).
 
-        "dt_obs":       1.0 / (4096 * 4),                    # Slower time step, improves resolution and chirp scale
+        # Spin support:
+        #   "none"       : nonspinning baseline
+        #   "aligned"    : z-spin affects remnant/ringdown and optional 1.5PN df/dt
+        #   "precessing" : approximate simple-precession dominant-mode wrapper; not full IMR precession and no higher modes
+        "SPIN_MODE": "none",                             # "none", "aligned", "precessing", or "auto", terms enter the PN df/dt coefficients.
+        "spin1x": 0.0, "spin1y": 0.0, "spin1z": 0.0,     # Full Spin Support
+        "spin2x": 0.0, "spin2y": 0.0, "spin2z": 0.0,
+        # Backward-compatible aliases.
+        "chi1z": 0.0, "chi2z": 0.0,                      # Aligned Spin
+        "REMNANT_APPROXIMANT":      "SEOBNRv4",          # Final-state fit for Mrem/a_rem used by Kerr diagnostic and UMH remnant seed.
+
+        "PRECESSION_STRENGTH":                       1.0,
+        "PRECESSION_MAX_BETA_DEG":                  45.0,
+        "PRECESSION_MAX_HZ":                        64.0,
+        "PRECESSION_FREEZE_AFTER_PEAK":             True,
+        "PRECESSION_INCLUDE_THOMAS_PHASE":         False,
+        "PRECESSION_INCLUDE_POLARIZATION_ROTATION": True,
+
+        "dt_obs":       1.0 / (4096 * 4),                # Slower time step, improves resolution and chirp scale
 
         "Sites_Used": {"Hanford", "Livingston", "Virgo"},
 
@@ -188,25 +241,152 @@ def get_default_config(config_overrides=None):
 
 
         # RingDown Settings parameters
-        "RINGDOWN_ENABLE":            True, #Used to disable any ringdown.  For diagnostic purposes.
+        "RINGDOWN_ENABLE":                             True,      # Used to disable any ringdown.  For diagnostic purposes.
+        "USE_UMH_MERGE_RELAXATION_THRESHOLD":          True,
+        "RINGDOWN_SEED_MODE":            "umh_remnant_mode",      # "qnm_diagnostic",
+
+        # Active UMH remnant frequency model.
+        # Uses the UMH rotating confinement eigenmode rule for F_chi.
+        # Does not use empirical Kerr/QNM Omega_220 or Q_220 fit constants.
+        "UMH_REMNANT_FREQ_MODEL":          "umh_radial_fit", #"umh_eigen", "umh_radial_operator", "umh_radial_fit", "umh_omega_fit",
+
+        # Active UMH damping model.
+        #   "umh_cycles"      = tau = N_cycles / f_rd_src
+        "UMH_REMNANT_DAMPING_MODEL":           "umh_cycles", #"umh_radial_operator"
+
+        # Optional nonlinear confinement boundary thickness in units of GM/c^2.
+        # Finite-width correction to the UMH rotating confinement surface.
+        # Publication configuration: zero boundary softening is used.
+        # The unsmoothed confinement/eigenmode already provides the reported detector overlap, so no additional finite-width smoothing is required
+        # for the published GW150914/GW170814 comparisons.
+        "UMH_EIGEN_BOUNDARY_SOFTENING":                 0.0,
+
+        # Optional radial relaxation / backscatter phase-delay correction.
+        # UMH interpretation:
+        #   The sharp rotating confinement eigenmode gives the azimuthal m=2 strain-guide frequency. 
+        #   A radial strain-gradient/backscatter delay can add a small extra response time before the remnant emits as a clean outgoing transverse mode.
+        # This is NOT boundary softening and does not change r_conf. It changes the eigenmode clock:
+        #   t_eff = t_phi + t_rad
+        #   omega_hat_eff = m / t_eff
+        #
+        # Use "none" for the pure sharp-confinement UMH eigenmode.
+        # Use "fractional_time" to test a global radial-delay fraction:
+        #   t_rad = UMH_RADIAL_PHASE_DELAY_FRAC * t_phi
+
+        # Active UMH remnant frequency model.
+        #   "umh_eigen"      = direct rotating confinement eigenmode
+        #   "umh_omega_fit"  = fitted UMH dimensionless frequency law:
+        #                      Omega_UMH(chi) = A + B*(1-chi)^C
+        # UMH fitted frequency-law coefficients.
+        "UMH_OMEGA_FIT_A":               1.5381969714219732,
+        "UMH_OMEGA_FIT_B":              -1.1556090096475626,
+        "UMH_OMEGA_FIT_C":              0.14022090728188466,
+
+        # Keep coefficient fitting diagnostic off during normal waveform generation.
+        # Turn on only when intentionally regenerating the coefficient table.
+        "UMH_REMNANT_CALC_COEFF_DIAGNOSTIC":          False,
+
+        # Radial phase delay remains separate. Default should stay off.
+        "UMH_RADIAL_PHASE_MODEL":                    "none",
+        "UMH_RADIAL_PHASE_DELAY_FRAC":                  0.0,
+        "UMH_RADIAL_PHASE_DELAY_TIME_GM_C3":            0.0,
+
+        # First-principles UMH radial-operator ringdown branch.
+        # This solves a radial variable-coefficient outgoing-boundary problem instead of fitting a Kerr/QNM coefficient table.
+        # Use the decay rate from the complex radial eigenfrequency.
+        # Radial operator mode.
+        "UMH_RADIAL_OP_ELL":                              2,
+        "UMH_RADIAL_OP_M":                                2,
+        # Radial domain in x = r / (GM/c^2). x_inner is automatically tied to the UMH confinement radius unless explicitly set.
+        "UMH_RADIAL_OP_X_INNER_OFFSET":               0.050,
+        "UMH_RADIAL_OP_X_OUTER":                       30.0,
+        "UMH_RADIAL_OP_X_MATCH":                       None,
+        # Simple analytic profile controls. These are placeholders for first-principles UMH remnant profiles.
+        "UMH_RADIAL_OP_TENSION_AMP":                   1.25,
+        "UMH_RADIAL_OP_DENSITY_AMP":                   0.00,
+        "UMH_RADIAL_OP_BARRIER_AMP":                   0.15,
+        "UMH_RADIAL_OP_BARRIER_WIDTH":                 0.55,
+        "UMH_RADIAL_OP_BARRIER_OFFSET":                0.20,
+        "UMH_RADIAL_OP_ROTATION_SCALE":                1.00,
+        "UMH_RADIAL_OP_ROTATION_POWER":                1.2415,
+        # Spin-dependent rotation-power correction. chi_ref is the reference remnant-spin point used by the radial-operator surrogate.
+        "UMH_RADIAL_OP_ROTATION_POWER_CHI_ENABLE":     True,
+        "UMH_RADIAL_OP_ROTATION_POWER_CHI_REF": 0.6100942439792432,
+        "UMH_RADIAL_OP_ROTATION_POWER_CHI_SLOPE":    -1.965,
+        # Safety clamp.
+        "UMH_RADIAL_OP_ROTATION_POWER_MIN":            0.85,
+        "UMH_RADIAL_OP_ROTATION_POWER_MAX":            1.50,
+
+        "UMH_RADIAL_OP_OMEGA_MIN_FACTOR":              0.88,
+        "UMH_RADIAL_OP_OMEGA_MAX_FACTOR":              1.02,
+        "UMH_RADIAL_OP_GAMMA_MIN_FACTOR":              0.10,
+        "UMH_RADIAL_OP_GAMMA_MAX_FACTOR":              3.00,
+        # Complex root initial guess. None = use the sharp UMH eigenmode estimate.
+        "UMH_RADIAL_OP_OMEGA_GUESS":                   None,
+        "UMH_RADIAL_OP_GAMMA_GUESS":                   0.04,
+        # Root / integration settings.
+        "UMH_RADIAL_OP_RTOL":                        1.0e-8,
+        "UMH_RADIAL_OP_ATOL":                       1.0e-10,
+        "UMH_RADIAL_OP_RESID_TOL":                   1.0e-5,
+        "UMH_RADIAL_OP_MAXFEV":                         300,
+        "UMH_RADIAL_OP_TARGET_RATIO":          0.9544249206,
+        "UMH_RADIAL_OP_DEBUG":                         True,
+
+        # Fast surrogate for the UMH radial outgoing-boundary operator.
+        # Coefficients reproduce operator solutions; they are not fitted to detector strain.
+        "UMH_RADIAL_FIT_CHI_REF":         0.61009424397924320,
+        "UMH_RADIAL_FIT_DELAY_REF":       0.04780931608484118,
+        "UMH_RADIAL_FIT_DELAY_CHI_SLOPE": 0.03586007393884942,
+
+        "UMH_RADIAL_FIT_DELAY_MIN":                    0.00,
+        "UMH_RADIAL_FIT_DELAY_MAX":                    0.20,
+
+        # Publication damping model.
+        # The post-merger amplitude decays with one UMH coherence cycle per e-fold: tau_rd_src = UMH_RINGDOWN_DAMPING_CYCLES / f_rd_src.
+        # The ringdown frequency itself is supplied by the active UMH remnant frequency model above.
+        "UMH_RINGDOWN_DAMPING_CYCLES":                 1.00,
+        "USE_ISCO_ANCHOR_FOR_FMERGE":                  True,
+        "MERGE_FRAC_ISCO":                             1.00,
 
          #QNM Overtone Diagnostics, current UMH Medium relaxation works better without this, for diagnostic.
+        "COMPUTE_QNM_DIAGNOSTIC":     True,
         "USE_QNM_OVERTONE_ATTACH":   False,
         "QNM_OVERTONE_LIST":     [0, 1, 2],
         "QNM_OVERTONE_DECAY_RATIO":    0.3,
         "QNM_OVERTONE_AMPS":          None,
 
         #No RING_MERGE_C1_BLEND_SEC necessary, uses medium relaxation instead.
-        #"RING_MERGE_C1_BLEND_SEC":    0.0015,                    # ms smoothing time-constant (tune 0.002–0.005) 0.0035
+        #"RING_MERGE_C1_BLEND_SEC":    0.0015,                 # ms smoothing time-constant (tune 0.002–0.005) 0.0035
 
-        "f_min_obs":         20.0000,                    # Minimum Frequency hz.
+        "f_min_obs":               20.0000,                    # Minimum Frequency hz.
 
 
-        #Enabling USE_SOLITON_FOR_ENVELOPE introduces small, parameter-free fluctuations sourced by the soliton field; 
+        #Using soliton_umh, or hybrid_umh SOURCE_ENGINE introduces small, parameter-free fluctuations sourced by the soliton field; 
         #these are presented separately as candidate UMH microstructure, not used to fit the main chirp.
-        "USE_SOLITON_FOR_ENVELOPE": False,
-        "damping_factor":     0.9999,                    #0.9999,
-        "freq_damping":       0.0050,                    # Tweak between 0.0001 and 0.01 to suppress high-frequency noise, #0.0050.
+        #This is used to perform true medium wave simulations for upcoming research.
+        "SOURCE_ENGINE":    "analytic_umh",                    # analytic_umh, soliton_umh, hybrid_umh
+        # analytic_umh - UMH Reduced GR Limit
+        #    UMH reduced/macroscopic branch.
+        #    GR-like chirp behavior appears as the emergent limit of UMH.
+        #    Fast, stable, good for LIGO event comparisons.
+        #    Best for showing UMH reproduces GR-limit behavior while adding UMH propagation and medium relaxation.
+        # soliton_umh
+        #    UMH wave-field branch.
+        #    Nonlinear medium/soliton source dynamics are explicitly evolved.
+        #    Slower, more detailed.
+        #    Best for studying beyond-GR-limit wave structure, noise-like microstructure, source asymmetry, nonlinear overlap, and medium effects.
+        # hybrid_umh
+        #    Analytic UMH track supplies the stable macroscopic carrier.
+        #    Soliton branch supplies physically generated modulation, mode corrections, spin/vorticity corrections, or remnant relaxation detail.
+
+        "USE_SOLITON_FOR_ENVELOPE":             False,         # Soliton field modulates the analytic UMH amplitude envelope.
+        "USE_SOLITON_FOR_SOURCE_MODES":         False,         # Soliton field generates or corrects h_lm mode content.
+        "USE_SOLITON_FOR_SPIN_EVOLUTION":       False,         # Soliton vorticity/torque evolves S1, S2, and L.
+        "USE_SOLITON_FOR_REMPROFILE":           False,         # Post-merger soliton/medium relaxation determines remnant frequency and damping.
+        "USE_SOLITON_FOR_NOISE_MICROSTRUCTURE": False,         # Extract medium-level fine structure that may appear as non-GR waveform texture or noise-like detail.
+
+        "damping_factor":           0.9999,                    #0.9999,
+        "freq_damping":             0.0050,                    # Tweak between 0.0001 and 0.01 to suppress high-frequency noise, #0.0050.
 
 
         #Base location, created by UMH Redshift test for Calibration of Frequency, Phase, Time Dilation, and Amplitude.
@@ -258,6 +438,7 @@ def get_default_config(config_overrides=None):
 
     # If replica requested, layer it on top of base defaults first
     if requested_profile == "replica_gw150914": config.update(replica)
+    if requested_profile == "replica_gw170814": config.update(replica_gw170814)
 
     # Apply all user overrides next (so user can refine replica/default)
     # If RINGDOWN_OVERRIDE is set, its f_rd_obs_Hz / tau_rd_obs / f_merge_Hz replace the Q-based defaults. Effective values are written to metadata.
@@ -271,8 +452,13 @@ def get_default_config(config_overrides=None):
 
     config.update(overrides)
 
+    # Backward-compatible aliases: If the user explicitly supplied chi1z/chi2z but did not explicitly supply spin1z/spin2z, copy the aliases into the full spin-vector fields.
+    if "chi1z" in overrides and "spin1z" not in overrides: config["spin1z"] = float(config["chi1z"])
+    if "chi2z" in overrides and "spin2z" not in overrides: config["spin2z"] = float(config["chi2z"])
+
     # Stamp the final profile field for provenance
     config["profile"] = requested_profile
+    print(f"profile:{requested_profile}")
 
     return config, base
 
@@ -310,6 +496,7 @@ SITES = {
 
 EPS_FLOOR      = 1e-40
 EPS_SAFE_FLOOR = 1e-24
+EPS_SPIN       = 1e-14
 
 
 # Function to ensure proper RA, DEC values are provided.
@@ -326,11 +513,11 @@ def canonicalize_radec(ra_deg, dec_deg):
 # --------------------------------------------------------------------
 # UMH-native higher-order df/dt correction coefficients (GR-limit form)
 # --------------------------------------------------------------------
-# All coefficients are dimensionless and can be replaced or constrained
-# by UMH theory once medium-based corrections are derived.
+# All coefficients are dimensionless and can be replaced or constrained by UMH theory once medium-based corrections are derived.
 # When these match the GR 3.5 PN series, df/dt reproduces the standard
 # TaylorT1/T4 inspiral rate for non-spinning binaries.
-def get_gr_dfdt_coeffs(M1_kg_src, M2_kg_src, f_ref_src, eta=None, G_phys=6.67430e-11, c_phys=2.99792458e8, UMH_DFDT_PN_PROFILE=3.5):
+def get_gr_dfdt_coeffs(M1_kg_src, M2_kg_src, f_ref_src, eta=None, spin1x=0.0, spin1y=0.0, spin1z=0.0, spin2x=0.0, spin2y=0.0, spin2z=0.0, 
+                       SPIN_MODE="None", G_phys=6.67430e-11, c_phys=2.99792458e8, UMH_DFDT_PN_PROFILE=3.5):
     """
     GR-like post-Newtonian correction coefficients {C2..C7}
     for the UMH df/dt law, evaluated at a reference frequency f_ref_src.
@@ -346,8 +533,7 @@ def get_gr_dfdt_coeffs(M1_kg_src, M2_kg_src, f_ref_src, eta=None, G_phys=6.67430
                                   + C7 * u**7]  # 3.5PN
 
     where u = (f / f_ref_src)**(1/3) is proportional to v / v_ref and
-    K_N is the leading-order (0PN) Newtonian/UMH coefficient from
-    energy balance.
+    K_N is the leading-order (0PN) Newtonian/UMH coefficient from energy balance.
     """
     C2,C3,C4,C5,C6,C7=0.0,0.0,0.0,0.0,0.0,0.0
 
@@ -355,33 +541,38 @@ def get_gr_dfdt_coeffs(M1_kg_src, M2_kg_src, f_ref_src, eta=None, G_phys=6.67430
     M_tot_kg_src = M1_kg_src + M2_kg_src
     if(eta is None): eta = (M1_kg_src * M2_kg_src) / (M_tot_kg_src * M_tot_kg_src)
     v_ref = (math.pi * G_phys * M_tot_kg_src * f_ref_src / c_phys**3)**(1/3)
+
+    X1 = M1_kg_src / M_tot_kg_src; X2 = M2_kg_src / M_tot_kg_src
+    beta_SO = 0.0
+    
+    SPIN_MODE = str(SPIN_MODE).lower()
+    if SPIN_MODE in ("aligned", "precessing"):
+        spin1x=0.0; spin1y=0.0; spin2x=0.0; spin2y=0.0
+        # Leading aligned-spin spin-orbit parameter. Enters the 1.5PN df/dt correction as 4*pi - beta_SO.
+        beta_SO = ((1.0 / 12.0) * ((113.0 * X1 * X1 + 75.0 * eta) * float(spin1z) + (113.0 * X2 * X2 + 75.0 * eta) * float(spin2z)))
+    else: spin1x=0.0; spin1y=0.0; spin1z=0.0; spin2x=0.0; spin2y=0.0; spin2z=0.0
     
     # --- 1 PN–2.5 PN terms (standard) ---
     if(UMH_DFDT_PN_PROFILE>=1.0): C2 = v_ref**2 * (-743.0/336.0 - 11.0/4.0 * eta)                                 # 1 PN
-    if(UMH_DFDT_PN_PROFILE>=1.5): C3 = v_ref**3 * (4.0 * math.pi)                                                 # 1.5 PN
+    #if(UMH_DFDT_PN_PROFILE>=1.5): C3 = v_ref**3 * (4.0 * math.pi)                                                # 1.5 PN
+    if(UMH_DFDT_PN_PROFILE>=1.5): C3 = v_ref**3 * (4.0 * math.pi - beta_SO)                                       # 1.5 PN
     if(UMH_DFDT_PN_PROFILE>=2.0): C4 = v_ref**4 * (34103.0/18144.0 + 13661.0/2016.0 * eta + 59.0/18.0 * eta**2)   # 2 PN
     if(UMH_DFDT_PN_PROFILE>=2.5): C5 = v_ref**5 * (-4159.0/672.0 - 189.0/8.0 * eta) * math.pi                     # 2.5 PN
 
     # --- 3 PN term (includes Euler gamma + log terms, absorbed at f_ref_src) ---
     if(UMH_DFDT_PN_PROFILE>=3.0):
         gamma_E = 0.5772156649015328606
-        C6 = v_ref**6 * (
-            16447322263.0/139708800.0
-            - 1712.0/105.0 * (gamma_E + math.log(4.0 * v_ref))
-            + (-56198689.0/217728.0 + 451.0/48.0 * math.pi**2) * eta
-            + 541.0/896.0 * eta**2
-            - 5605.0/2592.0 * eta**3
-        )
+        C6 = v_ref**6 * (16447322263.0/139708800.0 - 1712.0/105.0 * (gamma_E + math.log(4.0 * v_ref))
+            + (-56198689.0/217728.0 + 451.0/48.0 * math.pi**2) * eta + 541.0/896.0 * eta**2 - 5605.0/2592.0 * eta**3)
 
     # --- 3.5 PN term ---
     if(UMH_DFDT_PN_PROFILE>=3.5):
-        C7 = v_ref**7 * math.pi * (
-            77096675.0/254016.0
-            + 378515.0/1512.0 * eta
-            - 74045.0/756.0 * eta**2
-        )
+        C7 = v_ref**7 * math.pi * (77096675.0/254016.0 + 378515.0/1512.0 * eta - 74045.0/756.0 * eta**2)
 
-    return dict(C2=C2, C3=C3, C4=C4, C5=C5, C6=C6, C7=C7)
+    return dict(C2=C2, C3=C3, C4=C4, C5=C5, C6=C6, C7=C7), dict(beta_SO=beta_SO, spin1x=spin1x, spin1y=spin1y, spin1z=spin1z, 
+                spin2x=spin2x, spin2y=spin2y, spin2z=spin2z, SPIN_MODE=SPIN_MODE, 
+                scalar_dfdt_spin_note=("Scalar df/dt uses only spin components projected onto the initial orbital angular momentum. "
+                                       "Transverse spin enters through the precession polarization wrapper." if SPIN_MODE == "precessing" else ""))
 
 
 # UMH_DFDT_COEFFS:
@@ -389,33 +580,304 @@ def get_gr_dfdt_coeffs(M1_kg_src, M2_kg_src, f_ref_src, eta=None, G_phys=6.67430
 # Newtonian (0PN) frequency-evolution law df/dt = K_N * f**(11/3).
 #
 #   C2 → 1PN (v^2 term)
-#       Encodes relativistic corrections to orbital binding energy
-#       and gravitational-wave flux at order (v/c)^2.
+#       Encodes relativistic corrections to orbital binding energy and gravitational-wave flux at order (v/c)^2.
 #       In GR limit: C2 = v_ref^2 * ( -743/336 - 11/4 * η )
 #
 #   C3 → 1.5PN (v^3 term)
-#       Represents the leading "tail" term, i.e., back-scattering
-#       of waves off the curved spacetime geometry.
+#       Represents the leading "tail" term, i.e., back-scattering of waves off the curved spacetime geometry.
 #       In GR limit: C3 = v_ref^3 * ( 4π )
 #
 #   C4 → 2PN (v^4 term)
-#       Higher-order relativistic corrections to energy flux
-#       and conservative dynamics; depends quadratically on η.
+#       Higher-order relativistic corrections to energy flux and conservative dynamics; depends quadratically on η.
 #       In GR limit: C4 = v_ref^4 * ( 34103/18144 + 13661/2016*η + 59/18*η**2 )
 #
 #   C5 → 2.5PN (v^5 term)
-#       Next-order tail correction; purely dissipative term entering
-#       the phase evolution.  In GR limit:
+#       Next-order tail correction; purely dissipative term entering the phase evolution.  In GR limit:
 #       C5 = v_ref^5 * ( -4159/672 - 189/8 * η ) * π
 #
-# In full UMH theory, each coefficient can incorporate medium-dependent
-# corrections (e.g., tension-redshift, dispersion, or field anisotropy),
+# In full UMH theory, each coefficient can incorporate medium-dependent corrections (e.g., tension-redshift, dispersion, or field anisotropy),
 # making them physically interpretable rather than phenomenological.
 
 
+def build_polarizations_nonprecessing(A_obs, phase_obs, iota_rad):
+    cosi = np.cos(iota_rad)
+    h_plus = A_obs * 0.5 * (1.0 + cosi*cosi) * np.cos(phase_obs)
+    h_cross = A_obs * cosi * np.sin(phase_obs)
+    return h_plus, h_cross
+
+
+def _umh_unit_vector(v, fallback=(0.0, 0.0, 1.0)):
+    # Safe unit-vector helper.
+    v = np.asarray(v, dtype=float)
+    n = float(np.linalg.norm(v))
+    if (not np.isfinite(n)) or n < EPS_SAFE_FLOOR: return np.asarray(fallback, dtype=float)
+    return v / n
+
+
+def _umh_cumtrapz(y, x):
+    """
+    Small local cumulative trapezoid integrator to avoid adding scipy.integrate dependency.
+    Returns out[0]=0 and out[i]=integral x[0]..x[i] y dx.
+    """
+    y = np.asarray(y, dtype=float); x = np.asarray(x, dtype=float)
+    out = np.zeros_like(y, dtype=float)
+    if y.size < 2: return out
+    dx = np.diff(x)
+    good = np.isfinite(dx)
+    dx = np.where(good, dx, 0.0)
+    out[1:] = np.cumsum(0.5 * (y[1:] + y[:-1]) * dx)
+    return out
+
+
+def _umh_basis_from_axis(axis, preferred=None):
+    # Build an orthonormal basis e1,e2 perpendicular to axis.
+    k = _umh_unit_vector(axis)
+    if preferred is None:
+        preferred = np.array([0.0, 0.0, 1.0], dtype=float)
+        if abs(float(np.dot(preferred, k))) > 0.95: preferred = np.array([1.0, 0.0, 0.0], dtype=float)
+    else: preferred = np.asarray(preferred, dtype=float)
+    e1 = preferred - float(np.dot(preferred, k)) * k
+    e1 = _umh_unit_vector(e1, fallback=(1.0, 0.0, 0.0))
+    # If fallback accidentally aligned with k, use y.
+    if abs(float(np.dot(e1, k))) > 0.95:
+        e1 = np.array([0.0, 1.0, 0.0], dtype=float)
+        e1 = e1 - float(np.dot(e1, k)) * k
+        e1 = _umh_unit_vector(e1, fallback=(1.0, 0.0, 0.0))
+    e2 = np.cross(k, e1)
+    e2 = _umh_unit_vector(e2, fallback=(0.0, 1.0, 0.0))
+    return e1, e2
+
+
+def evolve_precession_angles(t_obs, dt_obs, M1_solar_src, M2_solar_src, z_factor, spin1x, spin1y, spin1z, spin2x, spin2y, spin2z,
+                             iota_rad, phase_obs=None, f_obs=None, f_min_obs=20.0, t_peak_target=None,
+                             PRECESSION_STRENGTH=1.0, PRECESSION_MAX_BETA_DEG=45.0, PRECESSION_MAX_HZ=64.0, PRECESSION_FREEZE_AFTER_PEAK=True,
+                             G_phys=6.67430e-11, c_phys=2.99792458e8, M_sun=1.98847e30):
+    """
+    Approximate simple-precession evolution for the UMH analytic waveform.
+    -------
+    This is a conservative first-pass precession wrapper:
+      - It does not replace the intrinsic UMH/PN phase track.
+      - It evolves a simple precessing orbital angular-momentum direction L_hat(t).
+      - It computes time-dependent inclination iota(t) and polarization rotation psi(t).
+      - It is suitable for diagnostics and controlled spin sweeps.
+    Important limitation:
+        This is not a full IMRPhenomPv2/SEOBNR precessing model and does not include  higher modes. 
+        It is a "twisting-up" style dominant-mode approximation.
+    Coordinate convention
+    Initial source frame:
+        z-axis = initial orbital angular momentum L0.
+        x/y spin components are transverse to L0.
+        observer line of sight N lies in the x-z plane with angle iota_rad from L0.
+    """
+    t = np.asarray(t_obs, dtype=float)
+    n = t.size
+    if n < 1: raise ValueError("evolve_precession_angles: t_obs is empty.")
+    zfac = float(z_factor)
+    if (not math.isfinite(zfac)) or zfac <= 0.0: zfac = 1.0
+    m1 = float(M1_solar_src); m2 = float(M2_solar_src)
+    if m1 <= 0.0 or m2 <= 0.0: raise ValueError("evolve_precession_angles: source masses must be positive.")
+    Mtot_solar = m1 + m2
+    Mtot_kg = Mtot_solar * M_sun
+    X1 = m1 / Mtot_solar; X2 = m2 / Mtot_solar
+    eta = (m1 * m2) / (Mtot_solar * Mtot_solar)
+    # Frequency track in observer frame.
+    if f_obs is None:
+        if phase_obs is not None: f_obs = ensure_f_hist_from_phase(phase_obs, dt_obs, dtype=float)
+        else: f_obs = np.full(n, float(f_min_obs), dtype=float) # Emergency fallback only. Prefer phase-derived f_obs.
+    else: f_obs = np.asarray(f_obs, dtype=float)
+    if f_obs.size != n:
+        if f_obs.size < n:
+            pad_val = float(f_obs[-1]) if f_obs.size else float(f_min_obs)
+            f_obs = np.pad(f_obs, (0, n - f_obs.size), constant_values=pad_val)
+        else: f_obs = f_obs[:n]
+    f_obs = np.where(np.isfinite(f_obs), f_obs, float(f_min_obs))
+    f_obs = np.maximum(f_obs, max(float(f_min_obs), 1.0e-6))
+    # Convert to source-frame frequency for PN velocity estimate.
+    f_src = f_obs * zfac
+    v = (np.pi * G_phys * Mtot_kg * f_src / (c_phys**3)) ** (1.0 / 3.0)
+    v = np.where(np.isfinite(v), v, 1.0e-4); v = np.clip(v, 1.0e-4, 0.95)
+    # Dimensionless angular momenta scaled by M^2:
+    #   L/M^2 ~ eta / v
+    #   S_i/M^2 ~ X_i^2 chi_i
+    Lmag = eta / np.maximum(v, 1.0e-6)
+    S1_vec = (X1 * X1) * np.array([spin1x, spin1y, spin1z], dtype=float)
+    S2_vec = (X2 * X2) * np.array([spin2x, spin2y, spin2z], dtype=float)
+    S_vec = S1_vec + S2_vec
+    L0_hat = np.array([0.0, 0.0, 1.0], dtype=float)
+    # Transverse spin drives precession.
+    S_perp_vec = S_vec - float(np.dot(S_vec, L0_hat)) * L0_hat
+    S_perp = float(np.linalg.norm(S_perp_vec))
+    S_parallel = float(np.dot(S_vec, L0_hat))
+    spin_has_precession = S_perp > EPS_SPIN
+    # Observer line of sight. Initial inclination is angle between N and L0.
+    sini = math.sin(float(iota_rad))
+    cosi = math.cos(float(iota_rad))
+    N_hat = _umh_unit_vector(np.array([sini, 0.0, cosi], dtype=float), fallback=(0.0, 0.0, 1.0))
+    # Sky basis. p_hat is the projection of initial L0 into the sky plane, so nonprecessing beta=0 gives psi=0.
+    p_hat = L0_hat - float(np.dot(L0_hat, N_hat)) * N_hat
+    p_hat = _umh_unit_vector(p_hat, fallback=(1.0, 0.0, 0.0))
+    q_hat = np.cross(N_hat, p_hat)
+    q_hat = _umh_unit_vector(q_hat, fallback=(0.0, 1.0, 0.0))
+    if not spin_has_precession:
+        Lhat = np.tile(L0_hat, (n, 1))
+        alpha = np.zeros(n, dtype=float)
+        beta = np.zeros(n, dtype=float)
+        gamma = np.zeros(n, dtype=float)
+        psi = np.zeros(n, dtype=float)
+        iota_eff = np.full(n, float(iota_rad), dtype=float)
+        omega_p_obs = np.zeros(n, dtype=float)
+        return {"alpha": alpha, "beta": beta, "gamma": gamma, "psi": psi, "iota": iota_eff, "Lhat": Lhat, "Nhat": N_hat,
+            "Omega_p_obs": omega_p_obs, "f_obs": f_obs, "simple_precession_note": "No transverse spin; precession angles are zero."}
+    # Approximate fixed total-angular-momentum direction, initialized from early inspiral.
+    Lref = float(Lmag[0]) if Lmag.size else eta / max((np.pi * G_phys * Mtot_kg * max(f_min_obs, 1.0) * zfac / c_phys**3) ** (1.0 / 3.0), 1.0e-6)
+    J0_vec = Lref * L0_hat + S_vec
+    J_hat = _umh_unit_vector(J0_vec, fallback=L0_hat)
+    # Basis around J. Choose e1 so alpha=0 puts L as close as possible to initial L0.
+    e1_pref = L0_hat - float(np.dot(L0_hat, J_hat)) * J_hat
+    e1, e2 = _umh_basis_from_axis(J_hat, preferred=e1_pref)
+    # Cone opening angle grows as L shrinks.
+    # Use denominator L + S_parallel to avoid over-tilting when spin is mostly aligned.
+    denom = np.maximum(np.abs(Lmag + S_parallel), 1.0e-6)
+    beta = np.arctan2(S_perp, denom)
+    beta_max = math.radians(float(PRECESSION_MAX_BETA_DEG))
+    if not math.isfinite(beta_max) or beta_max <= 0.0: beta_max = math.radians(45.0)
+    beta = np.clip(beta, 0.0, beta_max)
+    # Leading-order-inspired simple precession frequency.
+    # This is intentionally conservative and diagnostic.
+    c1 = 2.0 + 1.5 * (m2 / m1); c2 = 2.0 + 1.5 * (m1 / m2)
+    S_eff_vec = c1 * S1_vec + c2 * S2_vec
+    S_eff_perp_vec = S_eff_vec - float(np.dot(S_eff_vec, L0_hat)) * L0_hat
+    S_eff_perp = float(np.linalg.norm(S_eff_perp_vec))
+    GM_over_c3 = G_phys * Mtot_kg / (c_phys**3)
+    inv_M_sec = 1.0 / max(GM_over_c3, 1.0e-30)
+    omega_p_src = float(PRECESSION_STRENGTH) * inv_M_sec * (v**5) * (S_eff_perp / np.maximum(Lmag, 1.0e-6))
+    omega_p_obs = omega_p_src / zfac
+    omega_p_obs = np.where(np.isfinite(omega_p_obs), omega_p_obs, 0.0)
+    omega_max = 2.0 * np.pi * float(PRECESSION_MAX_HZ)
+    if math.isfinite(omega_max) and omega_max > 0.0: omega_p_obs = np.clip(omega_p_obs, 0.0, omega_max)
+    # Freeze after merger/ringdown attachment to avoid unphysical post-merger plane whipping.
+    if PRECESSION_FREEZE_AFTER_PEAK and t_peak_target is not None and math.isfinite(float(t_peak_target)):
+        idx_peak = int(np.searchsorted(t, float(t_peak_target))); idx_peak = max(0, min(idx_peak, n - 1))
+        omega_p_obs[idx_peak:] = 0.0
+        beta[idx_peak:] = beta[idx_peak]
+    alpha = _umh_cumtrapz(omega_p_obs, t)
+    # Minimal-rotation / Thomas-precession-like angle.
+    # Keep available, but the waveform builder can choose whether to apply it.
+    gamma_dot = -np.cos(beta) * omega_p_obs
+    gamma = _umh_cumtrapz(gamma_dot, t)
+    # L_hat(t) precessing around J_hat.
+    ca = np.cos(alpha); sa = np.sin(alpha); cb = np.cos(beta); sb = np.sin(beta)
+    Lhat = (cb[:, None] * J_hat[None, :] + sb[:, None] * (ca[:, None] * e1[None, :] + sa[:, None] * e2[None, :]))
+    # Normalize row-wise for numerical safety.
+    Lnorm = np.linalg.norm(Lhat, axis=1)
+    bad = (~np.isfinite(Lnorm)) | (Lnorm < EPS_SAFE_FLOOR)
+    Lnorm = np.where(bad, 1.0, Lnorm)
+    Lhat = Lhat / Lnorm[:, None]
+    if np.any(bad): Lhat[bad, :] = L0_hat
+    # Effective inclination relative to the fixed line of sight.
+    cos_i_eff = np.einsum("ij,j->i", Lhat, N_hat)
+    cos_i_eff = np.clip(cos_i_eff, -1.0, 1.0)
+    iota_eff = np.arccos(cos_i_eff)
+    # Time-dependent polarization angle from projection of L onto the sky.
+    Lproj = Lhat - cos_i_eff[:, None] * N_hat[None, :]
+    px = np.einsum("ij,j->i", Lproj, p_hat)
+    qx = np.einsum("ij,j->i", Lproj, q_hat)
+    psi = np.arctan2(qx, px); psi = np.unwrap(psi); psi = np.where(np.isfinite(psi), psi, 0.0)
+    return {"alpha": alpha, "beta": beta, "gamma": gamma, "psi": psi, "iota": iota_eff, "Lhat": Lhat, "Jhat": J_hat, "Nhat": N_hat,
+            "Omega_p_obs": omega_p_obs, "f_obs": f_obs, "S_vec": S_vec, "S_perp": S_perp,
+            "simple_precession_note": ("Approximate dominant-mode simple-precession wrapper. "
+                                       "Not a full IMR precessing waveform and does not include higher modes.")}
+
+
+def rotate_modes_to_inertial(A_obs, phase_obs, precession, INCLUDE_THOMAS_PHASE=False, INCLUDE_POLARIZATION_ROTATION=True):
+    """
+    Rotate the dominant co-precessing quadrupole-like waveform into the inertial observer basis.
+    Parameters
+        A_obs, phase_obs: Existing UMH observer-frame amplitude and phase arrays.
+        precession: Dict returned by evolve_precession_angles().
+        INCLUDE_THOMAS_PHASE:
+            If True, applies phase_obs -> phase_obs + 2*gamma.
+            Default False preserves the current UMH phase track more strictly.
+        INCLUDE_POLARIZATION_ROTATION: If True, rotates plus/cross by the time-dependent precession polarization angle psi(t).
+    Returns: h_plus_obs, h_cross_obs
+    """
+    A = np.asarray(A_obs, dtype=float)
+    phase = np.unwrap(np.asarray(phase_obs, dtype=float))
+    if A.size != phase.size: raise ValueError(f"rotate_modes_to_inertial: A_obs and phase_obs size mismatch: {A.size} vs {phase.size}")
+    n = A.size
+    iota_eff = np.asarray(precession.get("iota"), dtype=float)
+    psi = np.asarray(precession.get("psi", np.zeros(n)), dtype=float)
+    gamma = np.asarray(precession.get("gamma", np.zeros(n)), dtype=float)
+    for name, arr in (("iota", iota_eff), ("psi", psi), ("gamma", gamma)):
+        if arr.size != n: raise ValueError(f"rotate_modes_to_inertial: precession['{name}'] length {arr.size} != waveform length {n}")
+    phase_eff = phase.copy()
+    if INCLUDE_THOMAS_PHASE: phase_eff = phase_eff + 2.0 * gamma
+    # Dominant-mode co-precessing polarizations, but with time-dependent inclination.
+    cosi = np.cos(iota_eff)
+    h_plus_cp = A * 0.5 * (1.0 + cosi * cosi) * np.cos(phase_eff)
+    h_cross_cp = A * cosi * np.sin(phase_eff)
+    if not INCLUDE_POLARIZATION_ROTATION: return h_plus_cp, h_cross_cp
+    # Spin-2 polarization-basis rotation.
+    c2p = np.cos(2.0 * psi); s2p = np.sin(2.0 * psi)
+    h_plus = c2p * h_plus_cp - s2p * h_cross_cp
+    h_cross = s2p * h_plus_cp + c2p * h_cross_cp
+    h_plus = np.where(np.isfinite(h_plus), h_plus, 0.0)
+    h_cross = np.where(np.isfinite(h_cross), h_cross, 0.0)
+    return h_plus, h_cross
+
+
+def build_polarizations_precessing(t_obs, dt_obs, A_obs=None, phase_obs=None, M1_solar_src=30.0, M2_solar_src=30.0, z_factor=1.0,
+                                   spin1x=0.0, spin1y=0.0, spin1z=0.0, spin2x=0.0, spin2y=0.0, spin2z=0.0, iota_rad=0.0,
+                                   D_L_umh_Mpc=None, f_min_obs=20.0, t_peak_target=None,
+                                   PRECESSION_STRENGTH=1.0, PRECESSION_MAX_BETA_DEG=45.0, PRECESSION_MAX_HZ=64.0,
+                                   PRECESSION_FREEZE_AFTER_PEAK=True, PRECESSION_INCLUDE_THOMAS_PHASE=False,
+                                   PRECESSION_INCLUDE_POLARIZATION_ROTATION=True, return_meta=False,
+                                   G_phys=6.67430e-11, c_phys=2.99792458e8, M_sun=1.98847e30):
+    """
+    Build observer-frame plus/cross polarizations for an approximate precessing-spin UMH waveform.
+    This function intentionally reuses the already-generated UMH amplitude and phase track.
+    It does not regenerate the chirp. It only twists/rotates the dominant-mode waveform using a simple-precession approximation.
+    Required: A_obs, phase_obs
+    D_L_umh_Mpc is accepted for signature compatibility/provenance but is not used here, because amplitude normalization 
+    has already been applied before this function is called.
+    """
+    if A_obs is None or phase_obs is None:
+        raise ValueError("build_polarizations_precessing requires A_obs and phase_obs. "
+                         "Pass the already-built A_obs and phase_obs from run_chirp_generator_test.")
+    A = np.asarray(A_obs, dtype=float)
+    phase = np.unwrap(np.asarray(phase_obs, dtype=float))
+    t = np.asarray(t_obs, dtype=float)
+    if A.size != phase.size: raise ValueError(f"build_polarizations_precessing: A_obs and phase_obs size mismatch: {A.size} vs {phase.size}")
+    if t.size != A.size: raise ValueError(f"build_polarizations_precessing: t_obs length {t.size} != waveform length {A.size}")
+    # Derive f(t) from the same phase used to build the waveform.
+    f_obs = ensure_f_hist_from_phase(phase, dt_obs, dtype=float)
+    f_obs = np.maximum(f_obs, max(float(f_min_obs), 1.0e-6))
+    precession = evolve_precession_angles(t_obs=t, dt_obs=dt_obs, M1_solar_src=M1_solar_src, M2_solar_src=M2_solar_src, z_factor=z_factor,
+                                          spin1x=spin1x, spin1y=spin1y, spin1z=spin1z, spin2x=spin2x, spin2y=spin2y, spin2z=spin2z,
+                                          iota_rad=iota_rad, phase_obs=phase, f_obs=f_obs, f_min_obs=f_min_obs, t_peak_target=t_peak_target,
+                                          PRECESSION_STRENGTH=PRECESSION_STRENGTH, PRECESSION_MAX_BETA_DEG=PRECESSION_MAX_BETA_DEG,
+                                          PRECESSION_MAX_HZ=PRECESSION_MAX_HZ, PRECESSION_FREEZE_AFTER_PEAK=PRECESSION_FREEZE_AFTER_PEAK,
+                                          G_phys=G_phys, c_phys=c_phys, M_sun=M_sun)
+    h_plus_obs, h_cross_obs = rotate_modes_to_inertial(A_obs=A, phase_obs=phase, precession=precession,
+                                                       INCLUDE_THOMAS_PHASE=PRECESSION_INCLUDE_THOMAS_PHASE, 
+                                                       INCLUDE_POLARIZATION_ROTATION=PRECESSION_INCLUDE_POLARIZATION_ROTATION)
+    if return_meta:
+        meta = {"precession_model": "UMH_simple_precession_dominant_mode", "precession_note": precession.get("simple_precession_note", ""),
+                "PRECESSION_STRENGTH": float(PRECESSION_STRENGTH), "PRECESSION_MAX_BETA_DEG": float(PRECESSION_MAX_BETA_DEG),
+                "PRECESSION_MAX_HZ": float(PRECESSION_MAX_HZ), "PRECESSION_FREEZE_AFTER_PEAK": bool(PRECESSION_FREEZE_AFTER_PEAK),
+                "PRECESSION_INCLUDE_THOMAS_PHASE": bool(PRECESSION_INCLUDE_THOMAS_PHASE),
+                "PRECESSION_INCLUDE_POLARIZATION_ROTATION": bool(PRECESSION_INCLUDE_POLARIZATION_ROTATION),
+                "precession_beta_max_rad": float(np.max(precession["beta"])) if precession["beta"].size else 0.0,
+                "precession_beta_max_deg": float(np.degrees(np.max(precession["beta"]))) if precession["beta"].size else 0.0,
+                "precession_alpha_final_rad": float(precession["alpha"][-1]) if precession["alpha"].size else 0.0,
+                "precession_omega_p_max_rad_s": float(np.max(precession["Omega_p_obs"])) if precession["Omega_p_obs"].size else 0.0,
+                "precession_S_perp": float(precession.get("S_perp", 0.0))}
+        return h_plus_obs, h_cross_obs, meta
+    return h_plus_obs, h_cross_obs
+
+
 # UMH soliton constructor used for the illustrative ultronic medium field.
-# This feeds A_raw (diagnostic amplitude) only; final detector strains do NOT
-# sample phi(x,y,z,t) directly.
+# This feeds A_raw (diagnostic amplitude) only; final detector strains do NOT sample phi(x,y,z,t) directly.
 @njit(cache=True, parallel=True, fastmath=True, nogil=True)
 def gaussian_soliton(phi, center, radius, amplitude):
     cx, cy, cz = center
@@ -498,21 +960,30 @@ def measure_strain(phi, center, orientation, spacing=1):
 
 
 # UMH-consistent leading-order quadrupole amplitude:
-# h(f) ∝ M_chirp^(5/3) f^(2/3) / D_eff
-# Here D_eff = d_geom_m * (1 + z_tension). This matches GR's form while encoding
-# UMH tension/redshift via D_eff. Used ONLY for the single global normalization.
-def newtonian_h_at_f_umh(f_obs_hz, M_chirp_src_kg, d_geom_m, z_tension=0.0, G_phys=6.67430e-11, c_phys=2.99792458e8):
+# h_ref ∝ M_chirp_src^(5/3) f_ref_src^(2/3) / D_L^UMH
+# D_L^UMH is the full Pantheon+-calibrated UMH effective luminosity distance: D_L^UMH = D_geom(z) * (1+z)^((1+delta)/2) * T(z)^(-1/2)
+# This is used ONLY for the single global normalization. Redshift, time-dilation, and transmission enter once through D_L^UMH, not through a separate D_eff factor.
+def newtonian_h_at_f_umh(f_ref_src_hz, M_chirp_src_kg, D_L_umh_m, G_phys=6.67430e-11, c_phys=2.99792458e8):
     """
-    UMH-consistent quadrupole amplitude:
-    - Redshift comes from medium tension (z_tension)
-    - Effective luminosity distance D_eff = d_geom * (1 + z_tension)
-    - Works with source-frame chirp mass.
+    UMH-consistent quadrupole amplitude normalization.
+    ----------
+    f_ref_src_hz:
+        Source-frame reference GW frequency corresponding to the observer-frame normalization point, f_ref_src = (1+z_UMH) * f_ref_obs.
+    M_chirp_src_kg: Source-frame chirp mass.
+    D_L_umh_m:
+        Full UMH effective luminosity distance in meters, including the Pantheon+-calibrated transmission and time-dilation factors.
+    -----
+    This implements the convention: h_ref^UMH = 4 G^(5/3) M_c,src^(5/3) (pi f_ref,src)^(2/3) / (c^4 D_L^UMH)
+    The envelope sample is still selected using f_ref_obs, because the stored waveform is indexed in detector/observer time. But the amplitude formula
+    itself is evaluated in the source-frame convention.
     """
-    #Update in the future to use "UMH_RedShift_Calibration_Fit.json" for exact distance shift.
+    f = float(f_ref_src_hz); M = float(M_chirp_src_kg); D = float(D_L_umh_m)
+    if not math.isfinite(f) or f <= 0.0: raise ValueError(f"Invalid f_ref_src_hz={f_ref_src_hz}")
+    if not math.isfinite(M) or M <= 0.0: raise ValueError(f"Invalid M_chirp_src_kg={M_chirp_src_kg}")
+    if not math.isfinite(D) or D <= 0.0: raise ValueError(f"Invalid D_L_umh_m={D_L_umh_m}")
 
-    D_eff = d_geom_m * (1.0 + z_tension)  # UMH effective D_L for δ≈1, T≈1
-    num = 4.0 * (G_phys**(5.0/3.0)) * (M_chirp_src_kg**(5.0/3.0)) * (math.pi * f_obs_hz)**(2.0/3.0)
-    return num / (c_phys**4 * D_eff)
+    num = 4.0 * (G_phys ** (5.0 / 3.0)) * (M ** (5.0 / 3.0)) * (math.pi * f) ** (2.0 / 3.0)
+    return num / (c_phys ** 4 * D)
 
 
 def create_UMH_z_tension_from_redshift_calibration(calibration_path, H0_km_s_Mpc=70.0, delta=1.0):
@@ -626,8 +1097,7 @@ def umh_macro_frequency_band(lambda_u, M_tot_solar, k_min=6.0, k_max=20.0, G_phy
     Heuristic UMH diagnostic:
     Connect fundamental UMH frequency f_u to BBH GW band via geometric scaling.
 
-    Treats the observable GW frequency as: f_GW ~ f_u * (lambda_u / R_orb),
-    where R_orb is in [k_min * R_g, k_max * R_g].
+    Treats the observable GW frequency as: f_GW ~ f_u * (lambda_u / R_orb), where R_orb is in [k_min * R_g, k_max * R_g].
 
     This is NOT used in the actual waveform; it's a consistency illustration only.
     """
@@ -879,8 +1349,7 @@ def amplitude_pn_factor(f_gw, M_tot_kg_src, eta, G_phys=6.67430e-11, c_phys=2.99
 
 
 # Reconstruct instantaneous GW frequency from the unwrapped phase.
-# Used to QA and stabilize normalization so that scaling is tied to phase_hist(t),
-# not to any stale or noisy frequency record.
+# Used to QA and stabilize normalization so that scaling is tied to phase_hist(t), not to any stale or noisy frequency record.
 def ensure_f_hist_from_phase(phase_hist, dt, dtype=np.float64):
     ph = np.unwrap(np.asarray(phase_hist, dtype=dtype))
     f  = np.diff(ph) / (2.0*np.pi*dt)
@@ -935,8 +1404,7 @@ def arm_from_azimuth(az_deg, E, N):
     return np.cos(az)*N + np.sin(az)*E
 
 def build_polarization_basis(k):
-    # Given propagation direction k (from source to Earth), build any orthonormal
-    # transverse basis (e_theta, e_phi); then rotate by psi for polarization.
+    # Given propagation direction k (from source to Earth), build any orthonormal transverse basis (e_theta, e_phi); then rotate by psi for polarization.
     # Use a stable choice: take ẑ unless nearly parallel.
     z = np.array([0.0, 0.0, 1.0])
     if abs(np.dot(k, z)) > 0.99: z = np.array([1.0, 0.0, 0.0])
@@ -994,8 +1462,7 @@ def compute_detector_geo(Sites_Used, ra_deg, dec_deg, utc_tuple, pol_psi_deg=0.0
 
     # Time delay (seconds) for each detector from source propagation.
     # Convention: h(t, x) = h0(t - k·x/c)
-    # Using +np.dot(r_site, k)/c ensures the correct arrival order
-    # (Livingston ~7 ms before Hanford for GW150914 geometry).
+    # Using +np.dot(r_site, k)/c ensures the correct arrival order (Livingston ~7 ms before Hanford for GW150914 geometry).
     taus = {name: float(np.dot(info["site_ecef"], k) / c_phys) for name, info in site_geo.items()}
     t0 = min(taus.values())
     for name in site_geo: site_geo[name]["geom_delay_sec"] = taus[name] - t0
@@ -1004,65 +1471,740 @@ def compute_detector_geo(Sites_Used, ra_deg, dec_deg, utc_tuple, pol_psi_deg=0.0
 # --- End Create Detectors GPS ---
 
 # --- Calculate Ringdown ---
-def estimate_remnant_mass_spin(M1_solar_src, M2_solar_src, chi1z=0.0, chi2z=0.0, G_phys=6.67430e-11, c_phys=2.99792458e8, M_sun=1.98847e30):
+def _kerr_isco_loss(chi):
     """
-    Estimate the final (remnant) black hole's mass and dimensionless spin
-    after the merger of two (possibly spinning, aligned) black holes.
+    Specific binding-energy loss at the Kerr ISCO: E_loss = 1 - E_ISCO(a)
+        chi > 0 = aligned/prograde
+        chi < 0 = anti-aligned/retrograde
+    This gives the correct test-particle trend:
+      chi=0    -> 0.05719
+      chi>0    -> larger radiated fraction
+      chi<0    -> smaller radiated fraction
+    """
+    a = max(-0.999, min(float(chi), 0.999))
+    z1 = 1.0 + (1.0 - a*a)**(1.0/3.0) * ((1.0 + a)**(1.0/3.0) + (1.0 - a)**(1.0/3.0))
+    z2 = math.sqrt(3.0*a*a + z1*z1)
+    # Prograde for a > 0, retrograde for a < 0
+    r_isco = 3.0 + z2 - math.copysign(math.sqrt(max(0.0, (3.0 - z1) * (3.0 + z1 + 2.0*z2))), a)
+    e_isco = math.sqrt(max(0.0, 1.0 - 2.0 / (3.0 * r_isco)))
+    return max(0.0, 1.0 - e_isco)
 
-    References
-    ----------
-    * Rezzolla et al., 2008, ApJ 674, L29.
-    * Healy, Lousto & Zlochower, 2014, PRD 90, 104004.
-    * Jiménez-Forteza et al., 2017, PRD 95, 064024.
+
+def estimate_remnant_mass_spin(M1_solar_src, M2_solar_src, spin1x=0.0, spin1y=0.0, spin1z=0.0, spin2x=0.0, spin2y=0.0, spin2z=0.0, 
+                               approximant="SEOBNRv4", SPIN_MODE="none", G_phys=6.67430e-11, c_phys=2.99792458e8, M_sun=1.98847e30, f_ref=-1):
+    """
+    Estimate the final remnant mass, final spin, radiated-energy fraction, and symmetric mass ratio for a quasi-circular aligned-spin BBH merger.
+    This function intentionally does NOT use a local hand-fit. It delegates the remnant calculation to standard PyCBC/LALSuite remnant fits.
+    Recommended approximants:
+      - "SEOBNRv4"    : aligned-spin, robust for this function's inputs.
+      - "SEOBNRv4PHM" : precessing-capable LAL path, but here x/y spins are zero.
+      - "NRSur7dq4"   : NRSur7dq4Remnant fit, valid only inside its calibration domain and requires LALSuite NRSur data support.
+    Returns
+    -------
+    Mrem_solar_src : float Final remnant mass in source-frame solar masses.
+    a_rem_src : float Dimensionless final remnant spin. For aligned-spin inputs this is signed relative to the orbital angular momentum.
+    E_rad_frac : float Fraction of source-frame total mass radiated away: E_rad_frac = 1 - Mrem / (M1 + M2).
+    eta : float Symmetric mass ratio.
+    """
+    def _finite_float(x, name):
+        x = float(x)
+        if not math.isfinite(x): raise ValueError(f"{name} must be finite; got {x!r}")
+        return x
+
+    M1_solar_src = _finite_float(M1_solar_src, "M1_solar_src"); M2_solar_src = _finite_float(M2_solar_src, "M2_solar_src")
+    if M1_solar_src <= 0.0 or M2_solar_src <= 0.0: raise ValueError(f"Component masses must be positive; got M1={M1_solar_src}, M2={M2_solar_src}")
+
+    SPIN_MODE = str(SPIN_MODE).lower()
+    if SPIN_MODE == "aligned": 
+        spin1x=0.0; spin1y=0.0; spin2x=0.0; spin2y=0.0
+        spin1z = _finite_float(spin1z, "spin1z"); spin2z = _finite_float(spin2z, "spin2z")
+        if not (-0.999 <= spin1z <= 0.999): raise ValueError(f"spin1z must be in [-0.999, 0.999]; got {spin1z}")
+        if not (-0.999 <= spin2z <= 0.999): raise ValueError(f"spin2z must be in [-0.999, 0.999]; got {spin2z}")
+    elif SPIN_MODE == "precessing":
+        spin1x = _finite_float(spin1x, "spin1x"); spin2x = _finite_float(spin2x, "spin2x")
+        spin1y = _finite_float(spin1y, "spin1y"); spin2y = _finite_float(spin2y, "spin2y")
+        spin1z = _finite_float(spin1z, "spin1z"); spin2z = _finite_float(spin2z, "spin2z")
+        if not (-0.999 <= spin1z <= 0.999): raise ValueError(f"spin1z must be in [-0.999, 0.999]; got {spin1z}")
+        if not (-0.999 <= spin2z <= 0.999): raise ValueError(f"spin2z must be in [-0.999, 0.999]; got {spin2z}")
+        mag1 = math.sqrt(spin1x*spin1x + spin1y*spin1y + spin1z*spin1z)
+        mag2 = math.sqrt(spin2x*spin2x + spin2y*spin2y + spin2z*spin2z)
+        if mag1 >= 0.999: raise ValueError(f"|spin1| must be < 0.999 for precessing remnant fit; got {mag1}")
+        if mag2 >= 0.999: raise ValueError(f"|spin2| must be < 0.999 for precessing remnant fit; got {mag2}")
+    else: spin1x=0.0; spin1y=0.0; spin1z=0.0; spin2x=0.0; spin2y=0.0; spin2z=0.0
+
+    # Ensure labeling: M1 >= M2, carrying spins with their masses.
+    if M2_solar_src > M1_solar_src: 
+        M1_solar_src, M2_solar_src = M2_solar_src, M1_solar_src; 
+        spin1x, spin2x = spin2x, spin1x;  spin1y, spin2y = spin2y, spin1y; spin1z, spin2z = spin2z, spin1z
+    M_tot_src = M1_solar_src + M2_solar_src
+    eta = (M1_solar_src * M2_solar_src) / (M_tot_src * M_tot_src)
+    approximant = str(approximant)
+
+    # Preferred path: PyCBC wrapper around LALSuite remnant fits.
+    try:
+        from pycbc.conversions import get_final_from_initial
+
+        Mrem_solar_src, a_rem_src = get_final_from_initial(mass1=M1_solar_src, mass2=M2_solar_src, spin1x=spin1x, spin1y=spin1y, spin1z=spin1z, 
+                                                           spin2x=spin2x, spin2y=spin2y, spin2z=spin2z, approximant=approximant, f_ref=f_ref)
+        Mrem_solar_src = float(Mrem_solar_src); a_rem_src = float(a_rem_src)
+
+    except ImportError:
+        # Direct LALSimulation fallback. This is still a standard LALSuite remnant fit, not a local fit.
+        try:
+            import lalsimulation as lalsim
+        except ImportError as exc:
+            raise ImportError("Defensible remnant mass/spin requires PyCBC or LALSuite. Install one of them, e.g. `pip install lalsuite pycbc`,"
+                              "or do not claim an NR/EOB-calibrated remnant estimate.") from exc
+
+        spin1 = [spin1x, spin1y, spin1z]; spin2 = [spin2x, spin2y, spin2z]
+        if approximant == "NRSur7dq4":
+            try:
+                import lal
+                from lalsimulation import nrfits
+            except ImportError as exc: raise ImportError("approximant='NRSur7dq4' requires LALSuite NR fit support.") from exc
+
+            res = nrfits.eval_nrfit(M1_solar_src * lal.MSUN_SI, M2_solar_src * lal.MSUN_SI, spin1, spin2, "NRSur7dq4Remnant", ["FinalMass", "FinalSpin"], f_ref=f_ref)
+            Mrem_solar_src = float(res["FinalMass"][0] / lal.MSUN_SI)
+            sf = res["FinalSpin"]
+            a_rem_src = float(math.sqrt(float(sf[0])**2 + float(sf[1])**2 + float(sf[2])**2))
+            if float(sf[2]) < 0.0: a_rem_src *= -1.0
+        elif approximant == "SEOBNRv4":
+            _, mf_frac, a_rem_src = lalsim.SimIMREOBFinalMassSpin(M1_solar_src, M2_solar_src, spin1, spin2, getattr(lalsim, approximant))
+            Mrem_solar_src = float(mf_frac) * M_tot_src; a_rem_src = float(a_rem_src)
+        else:
+            _, mf_frac, a_rem_src = lalsim.SimIMREOBFinalMassSpinPrec(M1_solar_src, M2_solar_src, spin1, spin2, getattr(lalsim, approximant))
+            Mrem_solar_src = float(mf_frac) * M_tot_src; a_rem_src = float(a_rem_src)
+
+    if not math.isfinite(Mrem_solar_src) or Mrem_solar_src <= 0.0: raise RuntimeError(f"Invalid remnant mass returned: {Mrem_solar_src}")
+    if not math.isfinite(a_rem_src) or abs(a_rem_src) >= 1.0: raise RuntimeError(f"Invalid remnant spin returned: {a_rem_src}")
+
+    E_rad_frac = 1.0 - (Mrem_solar_src / M_tot_src)
+    if not math.isfinite(E_rad_frac) or E_rad_frac < 0.0 or E_rad_frac > 0.25:
+        raise RuntimeError(f"Invalid radiated-energy fraction: {E_rad_frac}; Mtot={M_tot_src}, Mrem={Mrem_solar_src}")
+
+    print(f"[REMNANT_FINAL] M1={M1_solar_src:.6f} M2={M2_solar_src:.6f} eta={eta:.9f} Mrem_src={Mrem_solar_src:.6f} a_rem={a_rem_src:.6f} E_rad_frac={E_rad_frac:.9f}")
+
+    return Mrem_solar_src, a_rem_src, E_rad_frac, eta
+
+
+def umh_gr_limit_220_shape(chi):
+    """
+    GR-limit dimensionless Kerr/220 shape functions expressed as the macroscopic limit of the UMH remnant eigenmode.
+    These are not used as an external QNM seed. They define the GR-limit boundary condition for the UMH spin/tension-winding factor F(chi) and damping eigenvalue gamma(chi).
+    """
+    a = max(-0.9999, min(float(chi), 0.9999))
+    one_minus_a = max(1.0 - a, 1.0e-12)
+
+    # Berti/Cardoso/Will-style 220 real-frequency and quality-factor fits.
+    Omega_220 = 1.5251 - 1.1568 * (one_minus_a ** 0.1292)
+    Q_220     = 0.7000 + 1.4187 * (one_minus_a ** -0.4990)
+
+    if not math.isfinite(Omega_220) or Omega_220 <= 0.0: raise ValueError(f"Invalid Omega_220={Omega_220} for chi={chi}")
+    if not math.isfinite(Q_220) or Q_220 <= 0.0: raise ValueError(f"Invalid Q_220={Q_220} for chi={chi}")
+
+    # UMH spin/tension-winding factor required for the GR/Kerr 220 limit:
+    #     omega_R_UMH = pi*c^3/(G*M*F)
+    #     omega_R_GR  = Omega_220*c^3/(G*M)
+    # so: F_GR_220 = pi / Omega_220
+    F_GR_220 = math.pi / Omega_220
+
+    return {"chi": float(a), "Omega_220": float(Omega_220), "Q_220": float(Q_220), "F_GR_220": float(F_GR_220)}
+
+
+def fit_umh_ringdown_coefficients(chi_values, f_src_Hz_values, tau_src_s_values, Mrem_kg_values, G_phys=6.67430e-11, c_phys=2.99792458e8):
+    """
+    Fit Kerr-style coefficient forms to UMH remnant eigenmode data.
+    Inputs must be source-frame:
+        chi_values       remnant spin values
+        f_src_Hz_values  UMH source-frame ringdown frequencies
+        tau_src_s_values UMH source-frame damping times
+        Mrem_kg_values   UMH source-frame remnant masses
+    Outputs:
+        omega_coeffs = (A, B, C) for Ω(χ) = A + B(1-χ)^C
+        Q_coeffs     = (D, E, F) for Q(χ) = D + E(1-χ)^F
+    """
+    from scipy.optimize import curve_fit
+
+    def omega_fit_form(chi, A, B, C): chi = np.asarray(chi, dtype=float); return A + B * np.power(1.0 - chi, C)
+    def Q_fit_form(chi, D, E, F): chi = np.asarray(chi, dtype=float); return D + E * np.power(1.0 - chi, F)
+
+    chi = np.asarray(chi_values, dtype=float); f = np.asarray(f_src_Hz_values, dtype=float); tau = np.asarray(tau_src_s_values, dtype=float)
+    M = np.asarray(Mrem_kg_values, dtype=float)
+    if not (chi.size == f.size == tau.size == M.size): raise ValueError("chi, f, tau, and M arrays must have the same length.")
+    if chi.size < 6: raise ValueError("Use at least 6 spin samples; 20+ is better for stable coefficients.")
+    if np.any(~np.isfinite(chi)) or np.any(chi <= -1.0) or np.any(chi >= 1.0): raise ValueError("All chi values must be finite and inside (-1, 1).")
+    if np.any(~np.isfinite(f)) or np.any(f <= 0.0): raise ValueError("All source-frame frequencies must be positive and finite.")
+    if np.any(~np.isfinite(tau)) or np.any(tau <= 0.0): raise ValueError("All source-frame tau values must be positive and finite.")
+    if np.any(~np.isfinite(M)) or np.any(M <= 0.0): raise ValueError("All remnant masses must be positive and finite.")
+    # Dimensionless real frequency:
+    # Ω = ω_R * G*M/c^3 = 2π f_src * G*M/c^3
+    Omega = 2.0 * math.pi * f * G_phys * M / (c_phys ** 3)
+    # Ringdown quality factor:
+    # Q = π f τ
+    Q = math.pi * f * tau
+    # Fit Ω(χ) = A + B(1-χ)^C
+    omega_guess = (1.5, -1.1, 0.13)
+    omega_bounds = ([0.0, -10.0, 0.001], [5.0,  10.0, 5.0])
+    omega_coeffs, omega_cov = curve_fit(omega_fit_form, chi, Omega, p0=omega_guess, bounds=omega_bounds, maxfev=100000)
+
+    # Fit Q(χ) = D + E(1-χ)^F
+    Q_guess = (0.7, 1.4, -0.5)
+    Q_bounds = ([0.0, 0.0, -5.0], [20.0, 50.0, 5.0])
+    Q_coeffs, Q_cov = curve_fit(Q_fit_form, chi, Q, p0=Q_guess, bounds=Q_bounds, maxfev=100000)
+
+    Omega_pred = omega_fit_form(chi, *omega_coeffs)
+    Q_pred = Q_fit_form(chi, *Q_coeffs)
+
+    return {"omega_coeffs": {"A": float(omega_coeffs[0]), "B": float(omega_coeffs[1]), "C": float(omega_coeffs[2]), "form": "Omega_UMH(chi) = A + B*(1-chi)^C"},
+            "Q_coeffs": {"D": float(Q_coeffs[0]), "E": float(Q_coeffs[1]), "F": float(Q_coeffs[2]), "form": "Q_UMH(chi) = D + E*(1-chi)^F"},
+            "diagnostics": {"n_samples": int(chi.size), "Omega_rms_residual": float(np.sqrt(np.mean((Omega - Omega_pred) ** 2))),
+                            "Q_rms_residual": float(np.sqrt(np.mean((Q - Q_pred) ** 2))), "Omega_values": Omega.tolist(), "Q_values": Q.tolist(),
+                            "Omega_fit_values": Omega_pred.tolist(), "Q_fit_values": Q_pred.tolist()}}
+
+
+
+def umh_radial_phase_delay_from_model(t_phi_GM_c3, chi, model="none", delay_frac=0.0, delay_time_GM_c3=0.0):
+    """
+    UMH radial relaxation / backscatter phase-delay model.
+    The sharp rotating confinement eigenmode uses: omega_hat_base = m / t_phi
+    where t_phi is the dimensionless rotating confinement clock in units GM/c^3.
+    A radial strain-gradient/backscatter delay adds an additional response time:
+        t_eff = t_phi + t_rad
+        omega_hat_eff = m / t_eff
+    This lowers the real remnant frequency without changing the confinement radius. That is intentionally different from boundary softening.
+    Supported models:
+      - "none": t_rad = 0
+      - "fractional_time": t_rad = delay_frac * t_phi
+    The delay is dimensionless in units GM/c^3.
+    """
+    t_phi = float(t_phi_GM_c3)
+    if not math.isfinite(t_phi) or t_phi <= 0.0: raise ValueError(f"Invalid t_phi_GM_c3={t_phi_GM_c3}")
+    a = float(chi)
+    if not math.isfinite(a): raise ValueError(f"Invalid chi={chi}")
+    model = str(model).lower().strip()
+    if model in ("none", "off", "false", "0", ""): t_rad = 0.0; rule = "none"
+    elif model == "fractional_time":
+        eps = float(delay_frac)
+        if not math.isfinite(eps) or eps < 0.0: raise ValueError(f"Invalid UMH_RADIAL_PHASE_DELAY_FRAC={delay_frac}")
+        t_rad = eps * t_phi
+        rule = "fractional_time"
+    elif model == "absolute_time":
+        t_rad = float(delay_time_GM_c3)
+        if not math.isfinite(t_rad) or t_rad < 0.0: raise ValueError(f"Invalid radial delay_time_GM_c3={delay_time_GM_c3}")
+        rule = "absolute_time"
+    else: raise ValueError(f"Unsupported UMH_RADIAL_PHASE_MODEL={model!r}; use 'none', 'fractional_time', or 'absolute_time'.")
+
+    t_eff = t_phi + t_rad
+    if not math.isfinite(t_eff) or t_eff <= 0.0: raise ValueError(f"Invalid radial delayed t_eff={t_eff}")
+    radial_factor = t_phi / t_eff
+
+    return {"model": model, "rule": rule, "chi": float(a), "t_phi_GM_c3": float(t_phi), "t_rad_GM_c3": float(t_rad), "t_eff_GM_c3": float(t_eff),
+            "delay_frac_input": float(delay_frac), "radial_frequency_factor": float(radial_factor),
+            "note": ("Radial phase delay lowers omega_hat by adding response time. It is not a boundary-softening radius correction.")}
+
+
+def umh_tau_from_damping_cycles(f_src_Hz, damping_cycles=1.0):
+    """
+    UMH amplitude-decay timescale from remnant coherence cycles.
+    The active UMH interpretation is: tau_src = N_cycles / f_src
+    where N_cycles is the number of source-frame oscillation cycles over which the post-merger remnant amplitude decays by one e-fold.
+    This gives:
+        gamma_src = 1/tau_src
+        Q_UMH     = omega_R*tau_src/2 = pi*N_cycles
+
+    This is not the Kerr/QNM Q-factor decay. It is the UMH remnant coherence damping rule.
+    """
+    f = float(f_src_Hz); N = float(damping_cycles)
+    if not math.isfinite(f) or f <= 0.0: raise ValueError(f"Invalid f_src_Hz={f_src_Hz}")
+    if not math.isfinite(N) or N <= 0.0: raise ValueError(f"Invalid damping_cycles={damping_cycles}")
+    omega_R_src = 2.0 * math.pi * f
+    tau_src = N / f; gamma_src = 1.0 / tau_src
+    Q_umh = 0.5 * omega_R_src * tau_src
+    return {"tau_src_s": float(tau_src), "gamma_src_1_s": float(gamma_src), "Q_umh": float(Q_umh), "damping_cycles": float(N), "damping_rule": "umh_coherence_cycles"}
+
+
+def umh_eigen_F_chi(chi, m_az=2, branch="corotating", boundary_softening=0.0, radial_phase_model="none", radial_delay_frac=0.0, radial_delay_time_GM_c3=0.0):
+    """
+    UMH remnant eigenmode spin/tension factor F(chi).
+    This is the active UMH-native replacement for using the empirical Kerr/QNM Omega_220 fit constants.
+
+    UMH basis:
+      - The remnant is treated as a rotating nonlinear confinement state of the ultronic medium.
+      - The dominant post-merger mode is the lowest quadrupolar, phase-locked circulating strain eigenmode, m=2.
+      - The wave propagates at the medium wave speed c, while the remnant spin changes the effective confinement path through frame/phase dragging of
+        the rotating strain geometry.
+      - The real mode frequency is written in UMH form: omega_R = pi*c^3 / (G*Mrem*F_chi)
+        so F_chi is the dimensionless spin/tension-winding path factor.
+
+    Interpretation:
+      - F_chi is NOT a fitted QNM coefficient.
+      - It is the effective dimensionless circumference/phase-lock factor of the dominant trapped m=2 strain mode.
+      - The default branch uses the GR-limit rotating confinement geometry because UMH recovers GR macroscopically, but it does not use the
+        empirical Kerr/QNM Omega_220 or Q_220 fit formulas.
 
     Parameters
     ----------
-    M1_solar_src : float
-        Primary black hole mass [solar masses].
-    M2_solar_src : float
-        Secondary black hole mass [solar masses].
-    chi1z : float
-        Dimensionless spin of BH1 aligned with orbital angular momentum (-1 ≤ chi ≤ 1).
-    chi2z : float
-        Dimensionless spin of BH2 aligned with orbital angular momentum (-1 ≤ chi ≤ 1).
+    chi: Final remnant dimensionless spin. Positive values are treated as co-rotating/corotating confinement. The magnitude is clamped below 1.
+    m_az: Azimuthal phase-lock number. For the dominant gravitational quadrupole, use m_az=2.
+    branch: "corotating" or "counterrotating". For current nonprecessing remnant work, "corotating" is the active/default branch.
+    boundary_softening:
+        Optional finite-width nonlinear-confinement correction. Keep 0.0 without a UMH remnant simulation/eigenmode result that fixes it.
+        Positive values increase F_chi and lower the mode frequency.
+
+    Returns: F_chi, meta (F_chi is dimensionless. meta records the derivation path.)
     """
+    a = float(chi)
+    if not math.isfinite(a): raise ValueError(f"Invalid chi={chi}")
 
-    # Ensure labeling: M1 >= M2
-    if M2_solar_src > M1_solar_src: M1_solar_src, M2_solar_src = M2_solar_src, M1_solar_src; chi1z, chi2z = chi2z, chi1z
+    # Current nonprecessing remnant path: use spin magnitude for the rotating confinement geometry. Preserve sign handling for future anti-aligned tests.
+    a = max(-0.999999, min(a, 0.999999))
 
-    # --- Core parameters ---
-    M_tot_src   = M1_solar_src + M2_solar_src
-    eta     = (M1_solar_src * M2_solar_src) / (M_tot_src * M_tot_src)   # symmetric mass ratio
-    q       = M1_solar_src / M2_solar_src
-    chi_eff = (M1_solar_src * chi1z + M2_solar_src * chi2z) / M_tot_src
+    if int(m_az) <= 0: raise ValueError(f"m_az must be positive; got {m_az}")
+    m_az = int(m_az)
 
-    # --- Final spin fit (Jiménez-Forteza 2017, eq.14 simplified form) ---
-    # For aligned spins and mass ratios up to ~18, accurate to Δa ~ 0.002.
-    # a_f = s4*eta + s5*eta^2 + t0 + 2*sqrt(3)*eta - 3.871*eta^2 + (spin terms)
-    s4 = -0.12902113
-    s5 = -0.38451791
-    t0 = -2.68603213
+    branch = str(branch).lower().strip()
+    if branch not in ("corotating", "counterrotating"): raise ValueError(f"Unsupported UMH eigen branch={branch!r}; use 'corotating' or 'counterrotating'.")
 
-    a_rem_src = (2 * math.sqrt(3) * eta + t0 * eta**2 + s4 * eta * chi_eff + s5 * chi_eff**2)
-    # empirical correction to ensure correct nonspinning limit (~0.686 at η=0.25)
-    if chi_eff == 0.0: a_rem_src = 0.68646079 + 0.61323923*(eta - 0.25) - 3.64251761*(eta - 0.25)**2
-    else:
-        # smoothly blend spin and nonspinning fits
-        a_nospin  = 0.68646079 + 0.61323923*(eta - 0.25) - 3.64251761*(eta - 0.25)**2
-        a_spin    = a_nospin + (0.85 * chi_eff) * (1 - 0.3*(1 - 4*eta))
-        a_rem_src = 0.5 * (a_rem_src + a_spin)
+    # Effective rotating confinement radius in units of GM/c^2.
+    # This is the GR-limit rotating strain-guide geometry, used here as the macroscopic limit of the UMH confinement surface. It is NOT the empirical
+    # QNM 220 frequency fit. It is the null/strain confinement orbit of the rotating remnant medium.
+    # corotating:      r = 2[1 + cos((2/3) arccos(-a))]
+    # counterrotating: r = 2[1 + cos((2/3) arccos(+a))]
+    if branch == "corotating": r_conf = 2.0 * (1.0 + math.cos((2.0 / 3.0) * math.acos(-a))); spin_term = a
+    else: r_conf = 2.0 * (1.0 + math.cos((2.0 / 3.0) * math.acos(a))); spin_term = -a
 
-    a_rem_src = max(0.0, min(a_rem_src, 0.9999))
+    # Optional finite-boundary correction from nonlinear confinement thickness.
+    # This is left explicit because the current UMH Framework establishes nonlinear confinement and phase-locked modes, but does not yet provide a
+    # first-principles closed value for this correction.
+    soft = float(boundary_softening)
+    if not math.isfinite(soft) or soft < 0.0: raise ValueError(f"Invalid boundary_softening={boundary_softening}")
 
-    # --- Radiated energy fraction (Healy+14, eq. 24 approx) ---
-    # Accurate within 2% for q ∈ [1,10]
-    E_rad_frac = (0.057191 * eta) + (0.018163 * chi_eff * eta) - (0.124999 * eta**2)
-    E_rad_frac = max(0.0, min(E_rad_frac, 0.10))  # clamp physically
+    r_eff = r_conf + soft
 
-    # --- Remnant mass ---
-    Mrem_solar_src = M_tot_src * (1.0 - E_rad_frac)
+    # Sharp rotating confinement clock.
+    # This is the azimuthal m=2 strain-guide time in units GM/c^3.
+    t_phi = r_eff ** 1.5 + spin_term
+    if not math.isfinite(t_phi) or t_phi <= 0.0: raise ValueError(f"Invalid UMH eigen t_phi={t_phi}; chi={chi}, r_eff={r_eff}, spin_term={spin_term}")
 
-    return Mrem_solar_src, a_rem_src, E_rad_frac, eta
+    # Dimensionless angular frequency: omega_hat = omega_R * G*M/c^3
+    # for an m_az phase-locked wave circulating around the rotating confinement path. The denominator is the rotating path/time factor.
+    omega_hat_base = float(m_az) / t_phi
+    if not math.isfinite(omega_hat_base) or omega_hat_base <= 0.0: raise ValueError(f"Invalid UMH base eigen omega_hat={omega_hat_base}; chi={chi}, r_eff={r_eff}, spin_term={spin_term}")
+
+    radial_meta = umh_radial_phase_delay_from_model(t_phi_GM_c3=t_phi, chi=a, model=radial_phase_model, delay_frac=radial_delay_frac, 
+                                                    delay_time_GM_c3=radial_delay_time_GM_c3)
+    # Delayed effective eigenclock.
+    t_eff = float(radial_meta["t_eff_GM_c3"])
+    omega_hat = float(m_az) / t_eff
+    if not math.isfinite(omega_hat) or omega_hat <= 0.0: raise ValueError(f"Invalid UMH delayed eigen omega_hat={omega_hat}; chi={chi}, t_eff={t_eff}")
+
+    # From omega_R = pi*c^3/(G*M*F_chi):
+    #     omega_hat = pi / F_chi
+    #     F_chi     = pi / omega_hat
+    F_chi = math.pi / omega_hat
+
+    meta = {"F_chi": float(F_chi), "chi": float(a), "m_az": int(m_az), "branch": branch, "r_conf_GM_c2": float(r_conf), "r_eff_GM_c2": float(r_eff),
+            "boundary_softening_GM_c2": float(soft), "t_phi_GM_c3": float(t_phi), "t_eff_GM_c3": float(t_eff),
+            "omega_hat_base_UMH": float(omega_hat_base), "omega_hat_UMH": float(omega_hat), "radial_frequency_factor": float(omega_hat / omega_hat_base),
+            "radial_phase_delay": radial_meta, "rule": "UMH_phase_locked_rotating_confinement_eigenmode_with_optional_radial_delay"}
+    return float(F_chi), meta
+
+
+def umh_omega_fit_F_chi(chi, A=1.5381969714219732, B=-1.1556090096475626, C=0.14022090728188466):
+    """
+    UMH fitted dimensionless remnant-frequency law. This is not a radial-delay model. It directly defines:
+        Omega_UMH(chi) = omega_R * G*M/c^3
+                       = A + B*(1 - chi)^C
+    The UMH remnant form uses: omega_R = pi*c^3 / (G*M*F_chi), therefore: F_chi = pi / Omega_UMH
+    """
+    a = float(chi)
+    if not math.isfinite(a): raise ValueError(f"Invalid chi={chi}")
+    a = max(-0.999999, min(a, 0.999999))
+    A = float(A); B = float(B); C = float(C)
+    if not math.isfinite(A) or not math.isfinite(B) or not math.isfinite(C): raise ValueError(f"Invalid UMH omega-fit coefficients: A={A}, B={B}, C={C}")
+    one_minus_a = max(1.0 - a, 1.0e-12)
+    omega_hat = A + B * (one_minus_a ** C)
+    if not math.isfinite(omega_hat) or omega_hat <= 0.0: raise ValueError(f"Invalid UMH omega-fit omega_hat={omega_hat}; chi={a}, A={A}, B={B}, C={C}")
+    F_chi = math.pi / omega_hat
+    meta = {"F_chi": float(F_chi), "chi": float(a), "omega_hat_UMH": float(omega_hat), "omega_hat_base_UMH": float(omega_hat),
+            "radial_frequency_factor": 1.0, "omega_fit_coeffs": {"A": float(A), "B": float(B), "C": float(C), "form": "Omega_UMH(chi) = A + B*(1-chi)^C",},
+            "radial_phase_delay": {"model": "not_used", "rule": "frequency_law_direct", "t_rad_GM_c3": 0.0,
+                                   "note": "UMH omega-fit is a direct frequency law, not a radial-delay model."},
+            "rule": "UMH_fitted_dimensionless_remnant_frequency_law"}
+    return float(F_chi), meta
+
+
+def umh_conf_radius_GM_c2(chi):
+    """
+    UMH rotating confinement / photon-guide radius in x = r/(GM/c^2).
+    Same radius rule used by the sharp rotating-confinement eigenmode: r_conf = 2[1 + cos(2/3 arccos(-chi))]
+    """
+    a = float(chi)
+    if not math.isfinite(a): raise ValueError(f"Invalid chi={chi}")
+    a = max(-0.999999, min(a, 0.999999))
+    return 2.0 * (1.0 + math.cos((2.0 / 3.0) * math.acos(-a)))
+
+
+def umh_radial_operator_default_params():
+    return {"ell": 2, "m": 2, "x_inner_offset": 0.050, "x_outer": 80.0, "x_match": None,
+            "tension_amp": 0.00, "density_amp": 0.00, "barrier_amp": 0.12, "barrier_width": 0.90, "barrier_offset": 0.75, "rotation_scale": 1.00,
+            "omega_guess": None, "gamma_guess": None, "rtol": 1.0e-8, "atol": 1.0e-10, "maxfev": 80, "debug": False}
+
+
+def umh_radial_rotation_power_from_chi(chi, params):
+    """
+    Effective UMH radial rotation-profile exponent.
+    Base value is calibrated at chi_ref.  The slope lets the radial confinement/outgoing-boundary profile change with remnant spin.
+    """
+    base = float(params.get("rotation_power", 1.5))
+    if not bool(params.get("rotation_power_chi_enable", False)): return base
+    c = float(chi)
+    chi_ref = float(params.get("rotation_power_chi_ref", 0.6100942439792432))
+    slope = float(params.get("rotation_power_chi_slope", 0.0))
+    p_eff = base + slope * (c - chi_ref)
+    p_min = float(params.get("rotation_power_min", 0.85))
+    p_max = float(params.get("rotation_power_max", 1.50))
+    if not math.isfinite(p_eff): p_eff = base
+    return float(min(max(p_eff, p_min), p_max))
+
+
+def umh_radial_profiles_x(x, chi, params):
+    """
+    Dimensionless UMH remnant radial profiles. x = r / (GM/c^2)
+    Lambda(x) = T_eff / T_u
+    N(x)      = rho_eff / rho_u
+    U(x)      = confinement / curvature barrier term
+    Omega(x)  = local rotating-medium angular velocity in GM/c^3 units
+    This is the first analytic test profile. Later replace this with profiles extracted from the nonlinear UMH remnant simulation:
+        T_eff(r,chi), rho_eff(r,chi), U_eff(r,chi), Omega_U(r,chi).
+    """
+    x = float(x); a = float(chi); eps = 1.0e-12
+    tension_amp = float(params.get("tension_amp", 0.0)); density_amp = float(params.get("density_amp", 0.0))
+    barrier_amp = float(params.get("barrier_amp", 0.12)); barrier_width = max(float(params.get("barrier_width", 0.90)), 1.0e-6)
+    barrier_offset = float(params.get("barrier_offset", 0.75)); rotation_scale = float(params.get("rotation_scale", 1.0))
+    x_conf = umh_conf_radius_GM_c2(a); x_bar = x_conf + barrier_offset; inv_x2 = 1.0 / max(x * x, eps)
+    # Effective tension and inertia from inverse-square strain loading.
+    Lambda = 1.0 + tension_amp * inv_x2; N = 1.0 + density_amp * inv_x2
+    # dLambda/dx for the radial operator.
+    dLambda_dx = tension_amp * (-2.0) / max(x**3, eps)
+    # Local confinement / strain-curvature barrier.
+    z = (x - x_bar) / barrier_width
+    U = barrier_amp * math.exp(-0.5 * z * z)
+    # Rotating UMH medium clock. This uses the same angular guide rule as the sharp eigenmode, but extended as a radial rotation profile.
+    rotation_power = umh_radial_rotation_power_from_chi(a, params)
+    denom = (x ** rotation_power) + a
+    if denom <= eps: denom = eps
+    Omega_U = rotation_scale / denom
+    return {"Lambda": float(max(Lambda, eps)), "N": float(max(N, eps)), "dLambda_dx": float(dLambda_dx), "U": float(max(U, 0.0)),
+            "Omega_U": float(Omega_U), "x_conf": float(x_conf), "x_barrier": float(x_bar), "rotation_power": float(rotation_power)}
+
+
+def umh_radial_riccati_rhs(x, y_arr, omega_hat, chi, ell, m, params):
+    """
+    Riccati/log-derivative form of the radial equation. y = R'/R
+    Original radial operator:
+        1/x^2 d/dx [ x^2 Lambda dR/dx ]
+        + [ N(omega - m Omega_U)^2
+            - Lambda ell(ell+1)/x^2
+            - U ] R = 0
+    Dividing by Lambda: R'' + P R' + Q R = 0
+    with:
+        P = 2/x + Lambda'/Lambda
+        Q = (N/Lambda)(omega - m Omega)^2
+            - ell(ell+1)/x^2
+            - U/Lambda
+    Riccati: y' = -y^2 - P y - Q
+    """
+    y = y_arr[0]
+    prof = umh_radial_profiles_x(float(x), chi, params)
+    Lambda = prof["Lambda"]; N = prof["N"]; dLambda_dx = prof["dLambda_dx"]; U = prof["U"]; Omega_U = prof["Omega_U"]
+    P = (2.0 / max(float(x), 1.0e-12)) + dLambda_dx / Lambda
+    wloc = omega_hat - float(m) * Omega_U
+    Q = (N / Lambda) * (wloc * wloc) - float(ell * (ell + 1)) / max(float(x) ** 2, 1.0e-12) - U / Lambda
+    dydx = -(y * y) - P * y - Q
+    return np.array([dydx], dtype=np.complex128)
+
+
+def umh_radial_boundary_logderivative(x, omega_hat, chi, ell, m, params, side):
+    """
+    Boundary log-derivative y = R'/R.
+    Convention: deltaPsi ~ R(x) exp(-i omega t)
+    Outer outgoing:
+        R ~ exp(+i omega r_*)
+        y_out = +i omega dr_*/dx
+    Inner absorbed/ingoing into rotating remnant:
+        R ~ exp(-i(omega - m Omega_core) r_*)
+        y_in = -i(omega - m Omega_core) dr_*/dx
+    """
+    prof = umh_radial_profiles_x(float(x), chi, params)
+    drstar_dx = math.sqrt(prof["N"] / prof["Lambda"])
+    if side == "outer": return 1j * omega_hat * drstar_dx
+    if side == "inner": omega_core = prof["Omega_U"]; return -1j * (omega_hat - float(m) * omega_core) * drstar_dx
+    raise ValueError(f"Unknown boundary side={side!r}")
+
+
+def umh_radial_shooting_residual(vars_real, chi, params):
+    """
+    Root residual for complex omega_hat.
+    vars_real = [omega_R_hat, gamma_hat]
+    omega_hat = omega_R_hat - i gamma_hat
+    Match log-derivatives at x_match: y_inner(x_match) - y_outer(x_match) = 0
+    """
+    from scipy.integrate import solve_ivp
+
+    omega_R_hat = float(vars_real[0]); gamma_hat = float(vars_real[1])
+    # Keep solver away from unphysical negative frequencies/negative damping.
+    if omega_R_hat <= 0.0 or gamma_hat <= 0.0: return np.array([1.0e6 + abs(omega_R_hat), 1.0e6 + abs(gamma_hat)], dtype=float)
+    omega_hat = complex(omega_R_hat, -gamma_hat)
+    ell = int(params.get("ell", 2)); m = int(params.get("m", 2))
+    x_conf = umh_conf_radius_GM_c2(chi)
+    x_inner = x_conf + float(params.get("x_inner_offset", 0.050))
+    x_outer = float(params.get("x_outer", 80.0))
+    x_match_cfg = params.get("x_match", None)
+    if x_match_cfg is None: x_match = max(x_inner + 2.0, x_conf + float(params.get("barrier_offset", 0.75)) + 1.0)
+    else: x_match = float(x_match_cfg)
+    if not (x_inner < x_match < x_outer): raise ValueError(f"Bad radial domain: x_inner={x_inner}, x_match={x_match}, x_outer={x_outer}")
+    rtol = float(params.get("rtol", 1.0e-8)); atol = float(params.get("atol", 1.0e-10))
+    y0_inner = np.array([umh_radial_boundary_logderivative(x_inner, omega_hat, chi, ell, m, params, side="inner")], dtype=np.complex128)
+    sol_in = solve_ivp(fun=lambda x, y: umh_radial_riccati_rhs(x, y, omega_hat, chi, ell, m, params), t_span=(x_inner, x_match), y0=y0_inner,
+                       method="DOP853", rtol=rtol, atol=atol)
+    if not sol_in.success or sol_in.y.shape[1] < 1: return np.array([1.0e5, 1.0e5], dtype=float)
+    y0_outer = np.array([umh_radial_boundary_logderivative(x_outer, omega_hat, chi, ell, m, params, side="outer")], dtype=np.complex128)
+    sol_out = solve_ivp(fun=lambda x, y: umh_radial_riccati_rhs(x, y, omega_hat, chi, ell, m, params), t_span=(x_outer, x_match),
+                        y0=y0_outer, method="DOP853", rtol=rtol, atol=atol)
+    if not sol_out.success or sol_out.y.shape[1] < 1: return np.array([1.0e5, 1.0e5], dtype=float)
+    y_inner_match = sol_in.y[0, -1]; y_outer_match = sol_out.y[0, -1]
+    residual = y_inner_match - y_outer_match
+    return np.array([float(residual.real), float(residual.imag)], dtype=float)
+
+
+def solve_umh_radial_operator_qnm(chi, params=None):
+    """
+    Solve the UMH radial outgoing-boundary eigenproblem.
+    Returns dimensionless:
+        omega_hat_R = Re(omega) GM/c^3
+        gamma_hat   = decay rate GM/c^3
+        Q           = omega_hat_R / (2 gamma_hat)
+        F_chi       = pi / omega_hat_R
+    """
+    from scipy.optimize import root, least_squares
+    p = umh_radial_operator_default_params()
+    if params: p.update(params)
+    a = float(chi)
+    if not math.isfinite(a): raise ValueError(f"Invalid chi={chi}")
+    a = max(-0.999999, min(a, 0.999999))
+    ell = int(p.get("ell", 2)); m = int(p.get("m", 2))
+    x_conf = umh_conf_radius_GM_c2(a); t_phi = (x_conf ** 1.5) + a; omega_eigen_guess = float(m) / t_phi
+    omega_guess = p.get("omega_guess", None)
+    if omega_guess is None: omega_guess = omega_eigen_guess
+    omega_guess = float(omega_guess)
+    gamma_guess = p.get("gamma_guess", None)
+    if gamma_guess is None: gamma_guess = omega_guess / (2.0 * math.pi) # Current coherence-cycle damping gives Q≈pi, so gamma≈omega/(2*pi).
+    gamma_guess = float(gamma_guess)
+    # More forgiving than root(...): try nearby frequencies and damping rates.
+    start_guesses = []
+    for om_fac in (1.00, 0.98, 0.95, 0.92, 0.90, 1.03, 1.06, 1.10):
+        for gam_fac in (1.00, 0.75, 0.50, 0.25, 0.10, 1.50, 2.00): 
+            start_guesses.append([max(1.0e-8, omega_guess * om_fac), max(1.0e-10, gamma_guess * gam_fac)])
+    # Also try the Kerr-like target neighborhood because the UMH radial correction is expected to lower omega by roughly a few percent.
+    for om_fac in (0.955, 0.950, 0.945, 0.940):
+        for gam_fac in (0.50, 0.75, 1.00, 1.25): start_guesses.append([max(1.0e-8, omega_guess * om_fac), max(1.0e-10, gamma_guess * gam_fac)])
+    best_any = None; candidates, valid_candidates = [], []; valid_keys = set()
+    omega_min = omega_eigen_guess * float(p.get("omega_min_factor", 0.88))
+    omega_max = omega_eigen_guess * float(p.get("omega_max_factor", 1.05))
+    gamma_min = gamma_guess * float(p.get("gamma_min_factor", 0.10))
+    gamma_max = gamma_guess * float(p.get("gamma_max_factor", 3.00))
+    gamma_min = max(gamma_min, 1.0e-10)
+    gamma_max = max(gamma_max, gamma_min * 1.01)
+    max_nfev = int(p.get("maxfev", 80)) * 20
+    resid_tol = float(p.get("resid_tol", 1.0e-5))
+    target_ratio = float(p.get("target_ratio", 0.953))
+    for x0_try in start_guesses:
+        try:
+            x0_try = np.array(x0_try, dtype=float)
+            if not (omega_min <= x0_try[0] <= omega_max): continue
+            if not (gamma_min <= x0_try[1] <= gamma_max): continue
+            ls = least_squares(fun=lambda z: umh_radial_shooting_residual(z, a, p), x0=x0_try, bounds=([omega_min, gamma_min], [omega_max, gamma_max]), 
+                               xtol=1.0e-11, ftol=1.0e-11, gtol=1.0e-11, max_nfev=max_nfev)
+            if not (omega_min <= ls.x[0] <= omega_max): continue
+            if not (gamma_min <= ls.x[1] <= gamma_max): continue
+            fun = np.asarray(ls.fun, dtype=float); norm = float(np.linalg.norm(fun))
+            omega_tmp = float(ls.x[0]); gamma_tmp = float(ls.x[1])
+            ratio_to_eigen = omega_tmp / omega_eigen_guess
+            delay_frac = (omega_eigen_guess / omega_tmp) - 1.0
+            Q_tmp = omega_tmp / (2.0 * gamma_tmp)
+            candidate = {"x": np.asarray(ls.x, dtype=float), "fun": fun, "norm": norm, "success": bool(ls.success), "message": str(ls.message),
+                "nfev": int(ls.nfev), "start": np.asarray(x0_try, dtype=float), "ratio_to_eigen": float(ratio_to_eigen),
+                "delay_frac": float(delay_frac), "Q": float(Q_tmp), "target_error": float(abs(ratio_to_eigen - target_ratio))}
+            candidates.append(candidate)
+
+            if best_any is None or candidate["norm"] < best_any["norm"]: best_any = candidate
+            if candidate["success"] and candidate["norm"] < resid_tol:
+                # Collapse duplicate roots reached from different starting guesses.
+                # Tolerances are intentionally tighter than physics differences we care about.
+                root_key = (round(float(omega_tmp), 9), round(float(gamma_tmp), 9))
+                is_new_valid_root = root_key not in valid_keys
+                if is_new_valid_root:
+                    valid_keys.add(root_key); valid_candidates.append(candidate)
+                    if bool(p.get("debug", False)):
+                        print(f"[UMH_RADIAL_OP_VALID_CANDIDATE] omega={omega_tmp:.9f} gamma={gamma_tmp:.9f} "
+                              f"ratio_to_eigen={ratio_to_eigen:.6f} delay_frac={delay_frac:.6f} Q={Q_tmp:.6f} "
+                              f"target_error={abs(ratio_to_eigen - target_ratio):.6e} resid_norm={norm:.3e}")
+            elif bool(p.get("debug", False)):
+                print(f"[UMH_RADIAL_OP] start={candidate['start']} x={candidate['x']} resid={candidate['fun']} norm={candidate['norm']:.6e} "
+                      f"success={candidate['success']}")
+        except Exception as exc:
+            if bool(p.get("debug", False)): print(f"[UMH_RADIAL_OP] start={x0_try} failed: {exc}")
+
+    if best_any is None: raise RuntimeError("UMH radial-operator solve failed before producing any candidate.")
+    if not valid_candidates:
+        raise RuntimeError(f"UMH radial-operator solve did not converge to a valid outgoing-boundary mode. "
+                            f"best_message={best_any['message']}; start omega={omega_guess:.12g}, gamma={gamma_guess:.12g}; "
+                            f"best_start={best_any['start']}; best_x={best_any['x']}; residual={best_any['fun']}; "
+                            f"residual_norm={best_any['norm']:.6e}; nfev={best_any['nfev']}. "
+                            f"This usually means the current analytic placeholder radial profile does not yet support "
+                            f"a clean trapped/outgoing QNM-like resonance inside the selected search band.")
+
+    # Select the valid mode closest to the desired fundamental correction. Use residual norm as a secondary tie-breaker.
+    best = min(valid_candidates, key=lambda c: (c["target_error"], c["norm"]))
+    omega_R_hat = float(best["x"][0]); gamma_hat = float(best["x"][1])
+    if not math.isfinite(omega_R_hat) or omega_R_hat <= 0.0: raise RuntimeError(f"Invalid radial operator omega_R_hat={omega_R_hat}")
+    if not math.isfinite(gamma_hat) or gamma_hat <= 0.0: raise RuntimeError(f"Invalid radial operator gamma_hat={gamma_hat}")
+    print(f"[UMH_RADIAL_OP_SELECTED] omega={omega_R_hat:.9f} gamma={gamma_hat:.9f} ratio_to_eigen={best['ratio_to_eigen']:.6f} "
+          f"delay_frac={best['delay_frac']:.6f} Q={best['Q']:.6f} target_ratio={target_ratio:.6f} target_error={best['target_error']:.6e} "
+          f"resid_norm={best['norm']:.3e} unique_valid_count={len(valid_candidates)} raw_candidate_count={len(candidates)}")
+
+    Q = omega_R_hat / (2.0 * gamma_hat); F_chi = math.pi / omega_R_hat
+    x_inner = x_conf + float(p.get("x_inner_offset", 0.050)); x_outer = float(p.get("x_outer", 80.0)); x_match_cfg = p.get("x_match", None)
+    if x_match_cfg is None: x_match = max(x_inner + 2.0, x_conf + float(p.get("barrier_offset", 0.75)) + 1.0)
+    else: x_match = float(x_match_cfg)
+
+    rotation_power_eff = umh_radial_rotation_power_from_chi(a, p)
+
+    meta = {"rule": "UMH_radial_variable_coefficient_outgoing_boundary_operator", "chi": float(a), "ell": int(ell), "m": int(m),
+            "omega_hat_UMH": float(omega_R_hat), "gamma_hat_UMH": float(gamma_hat), "Q_umh": float(Q), "F_chi": float(F_chi),
+            "omega_hat_base_UMH": float(omega_eigen_guess), "omega_hat_sharp_eigen_guess": float(omega_eigen_guess), 
+            "ratio_radial_to_sharp_eigen": float(omega_R_hat / omega_eigen_guess),
+            "target_ratio": float(target_ratio), "target_error": float(best["target_error"]), "delay_frac": float(best["delay_frac"]),
+            "unique_valid_count": int(len(valid_candidates)), "raw_candidate_count": int(len(candidates)),
+            "x_conf_GM_c2": float(x_conf), "x_inner": float(x_inner), "x_match": float(x_match), "x_outer": float(x_outer),
+            "profiles": {"tension_amp": float(p.get("tension_amp", 0.0)), "density_amp": float(p.get("density_amp", 0.0)),
+                         "barrier_amp": float(p.get("barrier_amp", 0.12)), "barrier_width": float(p.get("barrier_width", 0.90)),
+                         "barrier_offset": float(p.get("barrier_offset", 0.75)), "rotation_scale": float(p.get("rotation_scale", 1.0)),
+                         "rotation_power_base": float(p.get("rotation_power", 1.5)),
+                         "rotation_power_effective": float(rotation_power_eff),
+                         "rotation_power_chi_enable": bool(p.get("rotation_power_chi_enable", False)),
+                         "rotation_power_chi_ref": float(p.get("rotation_power_chi_ref", 0.6100942439792432)),
+                         "rotation_power_chi_slope": float(p.get("rotation_power_chi_slope", 0.0)),
+                         "rotation_power_min": float(p.get("rotation_power_min", 0.85)),
+                         "rotation_power_max": float(p.get("rotation_power_max", 1.50)),
+                         },
+            "root": {"success": bool(best["success"]), "message": str(best["message"]), "nfev": int(best["nfev"]), "start": best["start"].tolist(),
+                     "residual_real": float(best["fun"][0]), "residual_imag": float(best["fun"][1]), "residual_norm": float(best["norm"])}}
+
+    return {"omega_hat_R": float(omega_R_hat), "gamma_hat": float(gamma_hat), "Q_umh": float(Q), "F_chi": float(F_chi), "meta": meta}
+
+
+def umh_radial_fit_delay_frac(chi, rad_chi_ref=0.6100942439792432, rad_chi_d0=0.04780931608484118, rad_chi_d1=0.03586007393884942,
+                              rad_chi_dmin=0.00, rad_chi_dmax=0.20):
+    chi = float(chi)
+    delay = rad_chi_d0 + rad_chi_d1 * (chi - rad_chi_ref)
+    if not math.isfinite(delay): delay = rad_chi_d0
+    return float(min(max(delay, rad_chi_dmin), rad_chi_dmax))
+
+
+def umh_radial_fit_frequency_factor(chi, rad_chi_ref=0.6100942439792432, rad_chi_d0=0.04780931608484118, rad_chi_d1=0.03586007393884942,
+                                    rad_chi_dmin=0.00, rad_chi_dmax=0.20): 
+    delay = umh_radial_fit_delay_frac(chi, rad_chi_ref, rad_chi_d0, rad_chi_d1, rad_chi_dmin, rad_chi_dmax)
+    return 1.0 / (1.0 + delay)
+
+
+def umh_remnant_mode_from_Mchi(Mrem_kg_src, chi_rem, freq_model="umh_eigen", damping_model="umh_cycles", damping_cycles=1.0, boundary_softening=0.0, 
+                               radial_phase_model="none", radial_delay_frac=0.0, radial_delay_time_GM_c3=0.0, 
+                               omega_fit_A=1.5381969714219732, omega_fit_B=-1.1556090096475626, omega_fit_C=0.14022090728188466, 
+                               radial_operator_params=None, rad_chi_ref=0.6100942439792432, rad_chi_d0=0.04780931608484118, rad_chi_d1=0.03586007393884942,
+                               rad_chi_dmin=0.00, rad_chi_dmax=0.20, G_phys=6.67430e-11, c_phys=2.99792458e8):
+    """
+    UMH-native remnant relaxation-mode seed.
+    Active UMH form: omega_R = pi*T_u*L^2 / (Mrem*c*F_chi)
+    Using the UMH macroscopic identity: T_u*L^2 = c^4/G
+    gives: omega_R = pi*c^3 / (G*Mrem*F_chi)
+    In freq_model='umh_eigen', F_chi is computed from the UMH rotating confinement eigenmode rule, not from empirical Kerr/QNM 220 coefficients.
+    Damping is intentionally separate. The active/default UMH damping model can remain 'umh_cycles', because the GR/Kerr Q-factor decay is only a compatibility
+    diagnostic unless independently derived from UMH.
+    """
+    M = float(Mrem_kg_src)
+    if not math.isfinite(M) or M <= 0.0: raise ValueError(f"Invalid Mrem_kg_src={Mrem_kg_src}")
+    freq_model = str(freq_model).lower().strip();  damping_model = str(damping_model).lower().strip()
+
+    M_geom_time = G_phys * M / (c_phys ** 3)
+    radial_operator_solution, radial_operator_gamma_hat = None, None
+    if freq_model == "umh_eigen":
+        F_chi, shape_meta = umh_eigen_F_chi(chi=chi_rem, m_az=2, branch="corotating", boundary_softening=boundary_softening,
+            radial_phase_model=radial_phase_model, radial_delay_frac=radial_delay_frac, radial_delay_time_GM_c3=radial_delay_time_GM_c3)
+        freq_rule = "umh_eigen_F_chi_phase_locked_confinement"
+        omega_hat_R = math.pi / float(F_chi)
+    elif freq_model in ("umh_omega_fit", "umh_frequency_law", "umh_coeff_fit"):
+        F_chi, shape_meta = umh_omega_fit_F_chi(chi=chi_rem, A=omega_fit_A, B=omega_fit_B, C=omega_fit_C)
+        freq_rule = "umh_fitted_dimensionless_frequency_law"
+        omega_hat_R = math.pi / float(F_chi)
+    elif freq_model in ("umh_radial_operator", "umh_shooting", "umh_radial_qnm"):
+        radial_operator_solution = solve_umh_radial_operator_qnm(chi=chi_rem, params=radial_operator_params)
+        F_chi = float(radial_operator_solution["F_chi"])
+        omega_hat_R = float(radial_operator_solution["omega_hat_R"])
+        radial_operator_gamma_hat = float(radial_operator_solution["gamma_hat"])
+        shape_meta = radial_operator_solution["meta"]
+        freq_rule = "umh_radial_operator_outgoing_boundary_complex_eigenfrequency"
+    elif freq_model == "umh_radial_fit":
+        F_chi_sharp, sharp_meta = umh_eigen_F_chi(chi=chi_rem, m_az=2, branch="corotating", boundary_softening=boundary_softening,
+            radial_phase_model="None", radial_delay_frac=0.0, radial_delay_time_GM_c3=0.0)
+        omega_hat_sharp = math.pi / float(F_chi_sharp)
+        radial_factor = umh_radial_fit_frequency_factor(chi_rem, rad_chi_ref=rad_chi_ref, rad_chi_d0=rad_chi_d0, rad_chi_d1=rad_chi_d1,
+            rad_chi_dmin=rad_chi_dmin, rad_chi_dmax=rad_chi_dmax)
+        delay_frac = umh_radial_fit_delay_frac(chi_rem, rad_chi_ref=rad_chi_ref, rad_chi_d0=rad_chi_d0, rad_chi_d1=rad_chi_d1,
+            rad_chi_dmin=rad_chi_dmin, rad_chi_dmax=rad_chi_dmax)
+        omega_hat_R = omega_hat_sharp * radial_factor
+        F_chi = math.pi / omega_hat_R
+        freq_rule = "umh_radial_surrogate"
+        shape_meta = {"rule": "UMH_radial_operator_surrogate", "chi": float(chi_rem), 
+                      "omega_hat_base_UMH": float(omega_hat_sharp), "omega_hat_sharp_eigen_guess": float(omega_hat_sharp), 
+                      "omega_hat_UMH": float(omega_hat_R), "ratio_radial_to_sharp_eigen": float(radial_factor), 
+                      "radial_frequency_factor": float(radial_factor), "delay_frac": float(delay_frac), "F_chi_sharp": float(F_chi_sharp), 
+                      "F_chi": float(F_chi), "chi_ref": float(rad_chi_ref), "delay_ref": float(rad_chi_d0), "delay_chi_slope": float(rad_chi_d1),
+                      "delay_min": float(rad_chi_dmin), "delay_max": float(rad_chi_dmax), "sharp_meta": sharp_meta,
+                      "note": "Fast surrogate for the solved UMH radial outgoing-boundary operator. QNM is not used as the active seed."}
+    else: raise ValueError(f"Unsupported UMH remnant freq_model={freq_model!r}; use 'umh_eigen' or 'umh_omega_fit'.")
+
+    omega_R_src = omega_hat_R / M_geom_time
+    f_src = omega_R_src / (2.0 * math.pi)
+
+    omega_hat_base = shape_meta.get("omega_hat_base_UMH", None)
+    if omega_hat_base is None: omega_hat_base = shape_meta.get("omega_hat_sharp_eigen_guess", None)
+    if omega_hat_base is None and isinstance(shape_meta.get("sharp_meta", None), dict): omega_hat_base = shape_meta["sharp_meta"].get("omega_hat_base_UMH", None)
+    if omega_hat_base is None: omega_hat_base = shape_meta.get("omega_hat_UMH", None)
+    if omega_hat_base is None: raise ValueError(f"shape_meta missing omega_hat information: {shape_meta}")
+    omega_hat_base = float(omega_hat_base)
+    omega_R_base_src = omega_hat_base * c_phys**3 / (G_phys * M)
+    f_src_no_radial_delay = omega_R_base_src / (2.0 * math.pi)
+
+    tau_src, gamma_src, damping_rule, Q_umh = None, None, None, None
+    if damping_model in ("umh_radial_operator", "from_radial_operator", "radial_operator"):
+        if radial_operator_gamma_hat is None: raise ValueError("damping_model='umh_radial_operator' requires freq_model='umh_radial_operator'.")
+        gamma_src = radial_operator_gamma_hat / M_geom_time
+        tau_src = 1.0 / gamma_src
+        Q_umh = omega_hat_R / (2.0 * radial_operator_gamma_hat)
+        damping_rule = "umh_radial_operator_complex_decay"
+    elif damping_model == "umh_cycles":
+        decay = umh_tau_from_damping_cycles(f_src_Hz=f_src, damping_cycles=damping_cycles)
+        tau_src = decay["tau_src_s"]; gamma_src = decay["gamma_src_1_s"]; Q_umh = decay["Q_umh"]; damping_rule = decay["damping_rule"]
+    elif damping_model == "defer": damping_rule = "defer_to_shared_tau_block"
+    else: raise ValueError(f"Unsupported damping_model={damping_model!r}")
+
+    return {"f_src_Hz": float(f_src), "omega_R_src_rad_s": float(omega_R_src), "tau_src_s": None if tau_src is None else float(tau_src),
+            "gamma_src_1_s": None if gamma_src is None else float(gamma_src), "Q_umh": None if Q_umh is None else float(Q_umh), 
+            "F_chi": float(F_chi), "freq_rule": str(freq_rule), "damping_rule": str(damping_rule), "shape_meta": shape_meta,
+            "f_src_no_radial_delay_Hz": float(f_src_no_radial_delay), 
+            "radial_frequency_factor": float(shape_meta.get("ratio_radial_to_sharp_eigen", shape_meta.get("radial_frequency_factor", 1.0)))}
 
 
 # ------------------------------------------------------------
@@ -1078,13 +2220,13 @@ def estimate_remnant_mass_spin(M1_solar_src, M2_solar_src, chi1z=0.0, chi2z=0.0,
 # - Units: M_f in kilograms, we convert to geometric time M_geom = G M_f / c^3 (seconds).
 # - Returns detector-frame (f_rd, tau).
 # ------------------------------------------------------------
-def qnm_22n_modes_from_Ma(M_tot_kg_est_src, a_rem_src, overtones=(0, 1, 2), G_phys=6.67430e-11, c_phys=2.99792458e8):
+def qnm_22n_modes_from_Ma(Mrem_kg_src, a_rem_src, overtones=(0, 1, 2), G_phys=6.67430e-11, c_phys=2.99792458e8):
     """
     Return dict: n -> (f_22n_Hz, tau_22n_sec) for (l,m)=(2,2), n in {0,1,2}
     using Berti+ fits for (M * omega_R) and Q(a).
     """
     # Geometric mass time-scale: M_geom_time = G M / c^3   [seconds]
-    M_geom_time = G_phys * M_tot_kg_est_src / (c_phys ** 3)
+    M_geom_time = G_phys * Mrem_kg_src / (c_phys ** 3)
 
     # Berti et al. (l=m=2) fits; coefficients carried as floats
     # M * omega_R = f1 + f2 * (1 - a) ** f3
@@ -1410,7 +2552,6 @@ def detector_weighted_phase_check(dt, t_array, strain_records, phase_hist_use, g
                                                                lowcut=20.0, highcut=512.0, taper_edge_sec=0.05):
     """
     Compute detector-weighted phase residuals vs the analytic phase history.
-
     Weighting: w_i(t) = |Hilbert(h_det_i(t))|^2 (energy-like), normalized.
     We remove a per-detector constant phase offset before measuring the residuals.
     """
@@ -1600,18 +2741,53 @@ def run_chirp_generator_test(config_overrides=None):
     
     M1_solar_src   = float(config.get("M1_solar_src", 30.0))
     M2_solar_src   = float(config.get("M2_solar_src", 30.0))
-    if M2_solar_src > M1_solar_src: M1_solar_src, M2_solar_src = M2_solar_src, M1_solar_src
     if M1_solar_src <= 0.0 or M2_solar_src <= 0.0: raise ValueError("M1_solar_src and M2_solar_src cannot be less than or equal to zero.")
 
-    Mrem_solar_src, a_rem_src, E_rad_frac, eta = estimate_remnant_mass_spin(M1_solar_src, M2_solar_src, G_phys=G_phys, c_phys=c_phys, M_sun=M_sun)
-    M_tot_kg_est_src = Mrem_solar_src * M_sun
-    # masses must be SI (kg)
-    M1_kg_src      = M1_solar_src * M_sun
-    M2_kg_src      = M2_solar_src * M_sun
-    M_tot_kg_src   = M1_kg_src + M2_kg_src
+    # Spin full vector.
+    spin1x = float(config.get("spin1x", 0.0)); spin1y = float(config.get("spin1y", 0.0)); spin1z = float(config.get("spin1z", 0.0))
+    spin2x = float(config.get("spin2x", 0.0)); spin2y = float(config.get("spin2y", 0.0)); spin2z = float(config.get("spin2z", 0.0))
+    if M2_solar_src > M1_solar_src: 
+        M1_solar_src, M2_solar_src = M2_solar_src, M1_solar_src; 
+        spin1x, spin2x = spin2x, spin1x; spin1y, spin2y = spin2y, spin1y; spin1z, spin2z = spin2z, spin1z
+    spin1 = np.array([spin1x, spin1y, spin1z], dtype=float); spin2 = np.array([spin2x, spin2y, spin2z], dtype=float)
+    mag1 = float(np.linalg.norm(spin1)); mag2 = float(np.linalg.norm(spin2))
+    if mag1 >= 1.0 or mag2 >= 1.0: raise ValueError(f"Dimensionless spin magnitudes must be < 1: |spin1|={mag1}, |spin2|={mag2}")
+    has_spin = (mag1 > EPS_SPIN) or (mag2 > EPS_SPIN); 
+    has_transverse = (abs(spin1x) > EPS_SPIN or abs(spin1y) > EPS_SPIN or abs(spin2x) > EPS_SPIN or abs(spin2y) > EPS_SPIN)
+    remnant_approximant = str(config.get("REMNANT_APPROXIMANT", "SEOBNRv4"))
+    SPIN_MODE = str(config.get("SPIN_MODE", "none")).lower()
+    if SPIN_MODE == "auto":
+        if not has_spin: SPIN_MODE = "none"
+        elif has_transverse: SPIN_MODE = "precessing"
+        else: SPIN_MODE = "aligned"
+    if SPIN_MODE not in ("none", "aligned", "precessing"): raise ValueError(f"Invalid SPIN_MODE={SPIN_MODE!r}; use none, aligned, precessing, or auto.")
+    if SPIN_MODE == "none": 
+        if has_spin: print("[SPIN WARNING] Nonzero spin inputs were provided, but SPIN_MODE='none'. All component spins will be forced to zero for the UMH nonspinning baseline.")
+        spin1[:] = 0.0; spin2[:] = 0.0; spin1x = spin1y = spin1z = 0.0; spin2x = spin2y = spin2z = 0.0; mag1 = mag2 = 0.0; 
+        has_spin = False; has_transverse = False
+    elif SPIN_MODE == "aligned" and has_transverse:
+        if has_transverse: raise ValueError("SPIN_MODE='aligned' only allows spin1z/spin2z or chi1z/chi2z. Set SPIN_MODE='precessing' for spin x/y components.")
+    elif SPIN_MODE == "precessing":
+        if not has_transverse:
+            print("[SPIN WARNING] SPIN_MODE='precessing' was requested, but no transverse spin was supplied. The precession wrapper will reduce to the nonprecessing/aligned limit.")
+        else: print("[SPIN] Using approximate UMH simple-precession dominant-mode wrapper. This is diagnostic and does not include higher modes or full spin-vector PN evolution.")
 
-    distance_Mpc   = float(config.get("distance_Mpc", 410.0))
-    d_geom_m       = distance_Mpc * MPC_TO_M
+    # masses must be SI (kg)
+    M1_kg_src = M1_solar_src * M_sun; M2_kg_src = M2_solar_src * M_sun
+    M_tot_kg_src = M1_kg_src + M2_kg_src
+    eta = (M1_kg_src * M2_kg_src) / (M_tot_kg_src * M_tot_kg_src)
+    chi_eff = (M1_solar_src * spin1[2] + M2_solar_src * spin2[2]) / (M1_solar_src + M2_solar_src)
+
+    Mrem_solar_src, a_rem_src, E_rad_frac, eta = estimate_remnant_mass_spin(M1_solar_src, M2_solar_src, spin1x=spin1x, spin1y=spin1y, spin1z=spin1z, 
+                                                                            spin2x=spin2x, spin2y=spin2y, spin2z=spin2z, approximant=remnant_approximant, 
+                                                                            SPIN_MODE=SPIN_MODE, G_phys=G_phys, c_phys=c_phys)
+    Mrem_kg_src = Mrem_solar_src * M_sun
+
+    # The config/table distance is the UMH effective luminosity distance input, not the geometric distance used directly in z_UMH(D_geom; alpha).
+    D_L_umh_input_Mpc = float(config.get("distance_Mpc", 410.0))
+    distance_Mpc      = D_L_umh_input_Mpc  # legacy alias used elsewhere in logs/config
+    D_L_umh_Mpc = D_L_umh_input_Mpc; D_L_umh_m   = D_L_umh_Mpc * MPC_TO_M
+    d_geom_Mpc = None; T_umh = None; d_geom_m = float("nan")
 
     # Binary parameters
     M_chirp_src_kg = ((M1_kg_src * M2_kg_src)**(3/5)) / ((M1_kg_src + M2_kg_src)**(1/5))  # Chirp mass
@@ -1635,8 +2811,8 @@ def run_chirp_generator_test(config_overrides=None):
     freq_damping   = float(config.get("freq_damping",    0.0000))
     REF_SPACING    = int(config.get("REF_SPACING",            2))
 
-    USE_SOL_ENV     = bool(config.get("USE_SOLITON_FOR_ENVELOPE", True))
-    if(USE_SOL_ENV):
+    SOURCE_ENGINE  = str(config.get("SOURCE_ENGINE", "soliton_umh")).lower()    #SOURCE_ENGINE=analytic_umh
+    if(SOURCE_ENGINE in ("soliton_umh", "hybrid_umh")):
         SOL_ENV_MODE             = str(config.get("SOL_ENV_MODE", "mix")).lower()
         SOL_ENV_ALPHA            = float(config.get("SOL_ENV_ALPHA",            0.35))
         SOL_ENV_MAX_DEV          = float(config.get("SOL_ENV_MAX_DEV",           0.4))
@@ -1695,6 +2871,28 @@ def run_chirp_generator_test(config_overrides=None):
         z_source = f"[CALIB] Fallback to z_GR={z_GR}"
         UMH_z_tension_info = f"[CALIB] Fallback to z_GR={z_GR}"
 
+    # --- Finalize UMH source--observer distances ---------------------------
+    # distance_Mpc / D_L_umh_input_Mpc is the tabulated event-level UMH effective luminosity distance. 
+    # The geometric distance is recovered from the inverted UMH redshift using the Pantheon+-calibrated relation.
+    D_L_umh_Mpc = float(D_L_umh_input_Mpc); D_L_umh_m   = D_L_umh_Mpc * MPC_TO_M
+    if ("UMH_z_tension_ref" in locals() and UMH_z_tension_ref is not None and alpha is not None and beta1 is not None and beta2 is not None and delta is not None):
+        d_geom_Mpc = float(UMH_z_tension_ref["d_from_z"](UMH_z_tension, alpha))
+        D_L_check_Mpc = float(UMH_z_tension_ref["DL_from_z"](UMH_z_tension, alpha, beta1, beta2, delta))
+        T_umh = float(UMH_z_tension_ref["T"](UMH_z_tension, beta1, beta2))
+
+        # This should be very close to the input distance because z_UMH was obtained by inverting D_L^UMH(z).
+        rel_err = abs(D_L_check_Mpc - D_L_umh_Mpc) / max(abs(D_L_umh_Mpc), EPS_SAFE_FLOOR)
+        if rel_err > 1.0e-6: print(f"[WARN] D_L^UMH inversion mismatch: input={D_L_umh_Mpc:.9g} Mpc, check={D_L_check_Mpc:.9g} Mpc, rel_err={rel_err:.3e}")
+    else:
+        # Fallback only. Primary paper runs should use the Pantheon calibration JSON. If we do not have beta/T(z), approximate D_geom by removing one redshift factor.
+        T_umh = None
+        if UMH_z_tension is not None and math.isfinite(UMH_z_tension) and UMH_z_tension > -1.0: d_geom_Mpc = D_L_umh_Mpc / max(1.0 + UMH_z_tension, EPS_SAFE_FLOOR)
+        else: d_geom_Mpc = D_L_umh_Mpc
+    d_geom_m = d_geom_Mpc * MPC_TO_M
+    config["D_L_umh_input_Mpc"] = float(D_L_umh_input_Mpc); config["D_L_umh_Mpc"] = float(D_L_umh_Mpc); config["D_L_umh_m"] = float(D_L_umh_m)
+    config["d_geom_Mpc"] = float(d_geom_Mpc); config["d_geom_m"] = float(d_geom_m); config["T_umh"] = None if T_umh is None else float(T_umh)
+    print(f"[UMH distances] D_L^UMH={D_L_umh_Mpc:.6f} Mpc, D_geom={d_geom_Mpc:.6f} Mpc, z_UMH={UMH_z_tension:.9f}, T(z)={T_umh if T_umh is not None else 'N/A'}")
+
 
     # --- UMH redshift (tension) -----------------------------------------
     # This is the only cosmological redshift we use for frequencies.
@@ -1711,12 +2909,9 @@ def run_chirp_generator_test(config_overrides=None):
 
 
     dt_obs = config["dt_obs"]
-    fs_obs = float(1.0/dt_obs)
-    Fn_obs = 0.5 * fs_obs
+    fs_obs = float(1.0/dt_obs); Fn_obs = 0.5 * fs_obs
 
-    dt_src = dt_obs / z_factor
-    fs_src = fs_obs * z_factor
-    Fn_src = Fn_obs * z_factor
+    dt_src = dt_obs / z_factor; fs_src = fs_obs * z_factor; Fn_src = Fn_obs * z_factor
 
 
     # ----- Ringdown Settings -----
@@ -1728,7 +2923,17 @@ def run_chirp_generator_test(config_overrides=None):
     # *_obs: what the detector "sees" after UMH redshift scaling.
     # When APPLY_UMH_FREQ_REDSHIFT is True, f_*_obs = f_*_src / z_factor.
     # When False, src and obs are identical.
-    f_min_obs = float(config.get("f_min_obs", 30.0))
+
+    # --- ISCO frequency (SOURCE & OBS frames) f_isco_src is an ORBITAL source-frame ISCO frequency. ---
+    f_isco_src = (c_phys**3) / (6.0**1.5 * np.pi * G_phys * M_tot_kg_src)
+    # --- Map to OBSERVED frame using UMH_z_tension ----------------------
+    # Detector-frame frequencies are source-frame / (1+z_umh) when redshift is active.
+    f_isco_obs = f_isco_src / z_factor
+    f_isco_gw_src = 2.0 * f_isco_src  # GW (2,2) ISCO in source frame
+    f_isco_gw_obs = f_isco_gw_src / z_factor
+    f_isco_obs  = f_isco_src  / z_factor
+
+    f_min_obs = float(config.get("f_min_obs", 20.0))
     f_min_src = f_min_obs * z_factor
 
     RINGDOWN_ENABLE         = bool(config.get("RINGDOWN_ENABLE",         True))
@@ -1736,42 +2941,18 @@ def run_chirp_generator_test(config_overrides=None):
     USE_QNM_OVERTONE_ATTACH = bool(config.get("USE_QNM_OVERTONE_ATTACH", False))
     ringdown_merge_strategy = None
     frequency_smoothing     = None
+    ring_down_modes, f_rd_src_est, f_rd_obs_est, tau_rd_src_est, tau_rd_obs_est = None, None, None, None, None; 
+    umh_mode, tau_seed_rule = None, None
+
+    if USE_QNM_OVERTONE_ATTACH:
+        print("[QNM_DIAGNOSTIC WARNING] USE_QNM_OVERTONE_ATTACH=True will overwrite the UMH medium-law ringdown after attach. Use only as an explicit "
+              "non-UMH diagnostic waveform branch.")
 
     # ---------------- Ringdown / Merger configuration ----------------
     # Optional overrides (can contain f_merge_Hz, f_merge_src_Hz, f_rd_obs_Hz, tau_rd_obs, etc.)
-    merge_rule = "unset"
-    driver_timescale_merge_src = None
 
     rd_cfg   = dict(config.get("RINGDOWN_OVERRIDE", {}))
     tau_rd_obs = None; tau_rd_src = None
-
-    # --- QNM ringdown frequencies (SOURCE FRAME) ------------------------
-    qnm_overtone_list = tuple(int(n) for n in config.get("QNM_OVERTONE_LIST", [0, 1, 2]))
-    qnm_decay_ratio   = float(config.get("QNM_OVERTONE_DECAY_RATIO", 0.3)) #0.7
-    qnm_amp_vector    = config.get("QNM_OVERTONE_AMPS", None)
-
-    # M_tot_kg_est_src is assumed to be a SOURCE-FRAME mass here.
-    ring_down_modes   = qnm_22n_modes_from_Ma(M_tot_kg_est_src, a_rem_src, overtones=qnm_overtone_list, G_phys=G_phys, c_phys=c_phys)
-    f_rd_src_est      = ring_down_modes[0][0]  # fundamental 220 (SOURCE FRAME)
-    f_rd_obs_est      = f_rd_src_est / z_factor
-    tau_rd_src_est    = ring_down_modes[0][1]
-    tau_rd_obs_est    = tau_rd_src_est * z_factor
-
-    # Allow explicit override of ringdown SOURCE or OBS frame
-    if "f_rd_obs_Hz" in rd_cfg: 
-        # Interpret override as OBSERVED frame, convert back to source if redshift applied
-        f_rd_obs = float(rd_cfg["f_rd_obs_Hz"])
-        f_rd_src = f_rd_obs * z_factor
-    else: 
-        f_rd_src, tau_rd_src, tau_rd_obs = f_rd_src_est, tau_rd_src_est, tau_rd_obs_est
-        f_rd_obs = f_rd_src / z_factor
-
-    # --- ISCO frequency (SOURCE & OBS frames) ---------------------------
-    # f_isco_src is an ORBITAL source-frame ISCO frequency.
-    f_isco_src = (c_phys**3) / (6.0**1.5 * np.pi * G_phys * M_tot_kg_src)
-    f_isco_obs = f_isco_src / z_factor
-    f_isco_gw_src = 2.0 * f_isco_src  # GW (2,2) ISCO in source frame
-    f_isco_gw_obs = f_isco_gw_src / z_factor
 
     # --- Inspiral end frequency f_merge_src (SOURCE FRAME) --------------
     # Priority:
@@ -1780,45 +2961,137 @@ def run_chirp_generator_test(config_overrides=None):
     #   (3) config["f_merge_src_Hz"]           (global source-frame setting)
     #   (4) F_MERGE_TO_FRD_SCALE * f_rd_obs    (model rule in source frame)
 
-    if "f_merge_obs_Hz" in rd_cfg: 
-        # Interpret as OBSERVED frame, convert to source frame if redshift applied
-        f_merge_obs = float(rd_cfg["f_merge_obs_Hz"])
-        f_merge_src = f_merge_obs * z_factor
-        merge_rule = "override_f_merge_obs"
+    RINGDOWN_SEED_MODE = str(config.get("RINGDOWN_SEED_MODE", "umh_remnant_mode")).lower()
+    COMPUTE_QNM_DIAGNOSTIC = bool(config.get("COMPUTE_QNM_DIAGNOSTIC", True))
+    qnm_diagnostic = None; umh_qnm_compare = None
+    if COMPUTE_QNM_DIAGNOSTIC or RINGDOWN_SEED_MODE == "qnm_diagnostic" or USE_QNM_OVERTONE_ATTACH:
+        # --- Optional QNM diagnostic only ------------------------------------
+        # QNM is not used to seed the active UMH ringdown unless explicitly requested.
+        # --- QNM ringdown frequencies (SOURCE FRAME) ------------------------
+        qnm_overtone_list = tuple(int(n) for n in config.get("QNM_OVERTONE_LIST", [0, 1, 2]))
+        qnm_decay_ratio   = float(config.get("QNM_OVERTONE_DECAY_RATIO", 0.3)) #0.7
+        qnm_amp_vector    = config.get("QNM_OVERTONE_AMPS", None)
+
+        ring_down_modes   = qnm_22n_modes_from_Ma(Mrem_kg_src, a_rem_src, overtones=qnm_overtone_list, G_phys=G_phys, c_phys=c_phys)
+        qnm_diagnostic = {"f_220_src_Hz": float(ring_down_modes[0][0]), "f_220_obs_Hz": float(ring_down_modes[0][0] / z_factor),
+                          "tau_220_src_s": float(ring_down_modes[0][1]), "tau_220_obs_s": float(ring_down_modes[0][1] * z_factor),
+                          "note": "QNM diagnostic only; not used as active UMH ringdown seed."}
+
+    # Choose preliminary merge anchor first.
+    if "f_merge_obs_Hz" in rd_cfg: f_merge_obs = float(rd_cfg["f_merge_obs_Hz"]); f_merge_src = f_merge_obs * z_factor; merge_rule = "override_f_merge_obs"
+    elif "f_merge_src_Hz" in rd_cfg: f_merge_src = float(rd_cfg["f_merge_src_Hz"]); f_merge_obs = f_merge_src / z_factor; merge_rule = "override_f_merge_src"
+    elif config.get("f_merge_obs_Hz", None) is not None: 
+        f_merge_obs = float(config["f_merge_obs_Hz"]); f_merge_src = f_merge_obs * z_factor; merge_rule = "config_f_merge_obs_Hz"
+    elif config.get("f_merge_src_Hz", None) is not None: 
+        f_merge_src = float(config["f_merge_src_Hz"]); f_merge_obs = f_merge_src / z_factor; merge_rule = "config_f_merge_src_Hz"
     else:
-        # Optional global source-frame target in config
-        f_merge_obs_cfg = config.get("f_merge_obs_Hz", None)
-        if f_merge_obs_cfg is not None: 
-            f_merge_obs = float(f_merge_obs_cfg)
-            f_merge_src = f_merge_obs * z_factor
-            merge_rule = "config_f_merge_obs_Hz"
+        use_isco_anchor = bool(config.get("USE_ISCO_ANCHOR_FOR_FMERGE", True))
+        if use_isco_anchor:
+            MERGE_FRAC_ISCO = float(config.get("MERGE_FRAC_ISCO", 1.0))
+            f_merge_src = MERGE_FRAC_ISCO * f_isco_gw_src; f_merge_obs = f_merge_src / z_factor; merge_rule = "isco_anchor"
         else:
-            use_isco_anchor   = bool(config.get("USE_ISCO_ANCHOR_FOR_FMERGE", True))
-            if use_isco_anchor:
-                MERGE_FRAC_ISCO = float(config.get("MERGE_FRAC_ISCO", 1.0))
-                f_merge_obs = MERGE_FRAC_ISCO * f_isco_gw_obs
-                f_merge_src = f_merge_obs * z_factor
-                merge_rule = "isco_anchor"
-            else:
-                f_m_scale_src = float(config.get("F_MERGE_TO_FRD_SCALE_SRC", 0.46))
-                f_merge_src   = f_m_scale_src * f_rd_src
-                f_merge_obs   = f_merge_src / z_factor
-                merge_rule = "scaled_from_f_rd"
+            raise ValueError("USE_ISCO_ANCHOR_FOR_FMERGE=False now requires explicit f_merge_src_Hz or f_merge_obs_Hz. "
+                             "The generator no longer allows f_merge_src to be scaled from f_rd_src.")
+
+    # Choose active ringdown target.
+    if "f_rd_obs_Hz" in rd_cfg: f_rd_obs = float(rd_cfg["f_rd_obs_Hz"]); f_rd_src = f_rd_obs * z_factor; ringdown_seed_rule = "override_f_rd_obs"
+    elif "f_rd_src_Hz" in rd_cfg: f_rd_src = float(rd_cfg["f_rd_src_Hz"]); f_rd_obs = f_rd_src / z_factor; ringdown_seed_rule = "override_f_rd_src"
+    elif RINGDOWN_SEED_MODE == "qnm_diagnostic":
+        f_rd_src = float(ring_down_modes[0][0]); f_rd_obs = f_rd_src / z_factor
+        ringdown_seed_rule = "qnm_explicit_diagnostic_mode"
+    else:
+        if bool(config.get("UMH_REMNANT_CALC_COEFF_DIAGNOSTIC", True)):
+            chi_grid = np.linspace(0.0, 0.95, 40)
+            Mrem_kg = 60.0 * 1.98847e30  # fixed mass for coefficient extraction
+            f_vals, tau_vals, M_vals = [], [], []
+            for chi in chi_grid:
+                mode = umh_remnant_mode_from_Mchi(Mrem_kg_src=Mrem_kg, chi_rem=chi, freq_model="umh_eigen", damping_model="umh_cycles",
+                                                  damping_cycles=1.0, boundary_softening=0.0, radial_phase_model="none", radial_delay_frac=0.0, 
+                                                  radial_delay_time_GM_c3=0.0)
+                f_vals.append(mode["f_src_Hz"]); tau_vals.append(mode["tau_src_s"]); M_vals.append(Mrem_kg)
+            fit = fit_umh_ringdown_coefficients(chi_values=chi_grid, f_src_Hz_values=f_vals, tau_src_s_values=tau_vals, Mrem_kg_values=M_vals)
+            print(fit["omega_coeffs"]); print(fit["Q_coeffs"])
+            UMH_RADIAL_OMEGA_FIT_A = fit["omega_coeffs"]["A"]; UMH_RADIAL_OMEGA_FIT_B = fit["omega_coeffs"]["B"]; UMH_RADIAL_OMEGA_FIT_C = fit["omega_coeffs"]["C"]
+        else:
+            UMH_RADIAL_OMEGA_FIT_A=float(config.get("UMH_OMEGA_FIT_A", 1.5381969714219732))
+            UMH_RADIAL_OMEGA_FIT_B=float(config.get("UMH_OMEGA_FIT_B", -1.1556090096475626))
+            UMH_RADIAL_OMEGA_FIT_C=float(config.get("UMH_OMEGA_FIT_C", 0.14022090728188466))
+
+        boundary_softening = float(config.get("UMH_EIGEN_BOUNDARY_SOFTENING", 0.0))
+        freq_model_active = str(config.get("UMH_REMNANT_FREQ_MODEL", "umh_eigen")).lower().strip()
+        try:
+            radial_operator_params = {"ell": int(config.get("UMH_RADIAL_OP_ELL", 2)), "m": int(config.get("UMH_RADIAL_OP_M", 2)),
+                                      "x_inner_offset": float(config.get("UMH_RADIAL_OP_X_INNER_OFFSET", 0.050)),
+                                      "x_outer": float(config.get("UMH_RADIAL_OP_X_OUTER", 80.0)), "x_match": config.get("UMH_RADIAL_OP_X_MATCH", None),
+                                      "tension_amp": float(config.get("UMH_RADIAL_OP_TENSION_AMP", 0.0)), 
+                                      "density_amp": float(config.get("UMH_RADIAL_OP_DENSITY_AMP", 0.0)),
+                                      "barrier_amp": float(config.get("UMH_RADIAL_OP_BARRIER_AMP", 0.12)), 
+                                      "barrier_width": float(config.get("UMH_RADIAL_OP_BARRIER_WIDTH", 0.90)),
+                                      "barrier_offset": float(config.get("UMH_RADIAL_OP_BARRIER_OFFSET", 0.75)), 
+                                      "rotation_scale": float(config.get("UMH_RADIAL_OP_ROTATION_SCALE", 1.0)),
+
+                                      "rotation_power": float(config.get("UMH_RADIAL_OP_ROTATION_POWER", 1.50)),
+                                      "rotation_power_chi_enable": bool(config.get("UMH_RADIAL_OP_ROTATION_POWER_CHI_ENABLE", False)),
+                                      "rotation_power_chi_ref": float(config.get("UMH_RADIAL_OP_ROTATION_POWER_CHI_REF", 0.6100942439792432)),
+                                      "rotation_power_chi_slope": float(config.get("UMH_RADIAL_OP_ROTATION_POWER_CHI_SLOPE", 0.0)),
+                                      "rotation_power_min": float(config.get("UMH_RADIAL_OP_ROTATION_POWER_MIN", 0.85)),
+                                      "rotation_power_max": float(config.get("UMH_RADIAL_OP_ROTATION_POWER_MAX", 1.50)), 
+                                      "omega_min_factor": float(config.get("UMH_RADIAL_OP_OMEGA_MIN_FACTOR", 0.88)),
+                                      "omega_max_factor": float(config.get("UMH_RADIAL_OP_OMEGA_MAX_FACTOR", 1.05)),
+                                      "gamma_min_factor": float(config.get("UMH_RADIAL_OP_GAMMA_MIN_FACTOR", 0.10)),
+                                      "gamma_max_factor": float(config.get("UMH_RADIAL_OP_GAMMA_MAX_FACTOR", 3.00)),
+                                      "omega_guess": config.get("UMH_RADIAL_OP_OMEGA_GUESS", None), "gamma_guess": config.get("UMH_RADIAL_OP_GAMMA_GUESS", None),
+                                      "rtol": float(config.get("UMH_RADIAL_OP_RTOL", 1.0e-8)), "atol": float(config.get("UMH_RADIAL_OP_ATOL", 1.0e-10)),
+                                      "resid_tol": float(config.get("UMH_RADIAL_OP_RESID_TOL", 1.0e-5)), "maxfev": int(config.get("UMH_RADIAL_OP_MAXFEV", 80)), 
+                                      "target_ratio": float(config.get("UMH_RADIAL_OP_TARGET_RATIO", 0.953)), "debug": bool(config.get("UMH_RADIAL_OP_DEBUG", False))}
+            umh_mode = umh_remnant_mode_from_Mchi(Mrem_kg_src=Mrem_kg_src, chi_rem=a_rem_src, 
+                                                  freq_model=freq_model_active,
+                                                  damping_model=str(config.get("UMH_REMNANT_DAMPING_MODEL", "umh_cycles")),
+                                                  damping_cycles=float(config.get("UMH_RINGDOWN_DAMPING_CYCLES", 1.00)),
+                                                  boundary_softening=boundary_softening,
+                                                  # Only used by freq_model="umh_eigen".
+                                                  radial_phase_model=str(config.get("UMH_RADIAL_PHASE_MODEL", "absolute_time")),
+                                                  radial_delay_frac=float(config.get("UMH_RADIAL_PHASE_DELAY_FRAC", 0.0)),
+                                                  radial_delay_time_GM_c3=float(config.get("UMH_RADIAL_PHASE_DELAY_TIME_GM_C3", 0.0)),
+                                                  # Only used by freq_model="umh_omega_fit".
+                                                  omega_fit_A=UMH_RADIAL_OMEGA_FIT_A, omega_fit_B=UMH_RADIAL_OMEGA_FIT_B, omega_fit_C=UMH_RADIAL_OMEGA_FIT_C,
+                                                  radial_operator_params=radial_operator_params, 
+                                                  rad_chi_ref=float(config.get("UMH_RADIAL_FIT_CHI_REF", 0.6100942439792432)),
+                                                  rad_chi_d0=float(config.get("UMH_RADIAL_FIT_DELAY_REF", 0.04780931608484118)),
+                                                  rad_chi_d1=float(config.get("UMH_RADIAL_FIT_DELAY_CHI_SLOPE", 0.03586007393884942)),
+                                                  rad_chi_dmin=float(config.get("UMH_RADIAL_FIT_DELAY_MIN", 0.00)),
+                                                  rad_chi_dmax=float(config.get("UMH_RADIAL_FIT_DELAY_MAX", 0.20)),
+                                                  G_phys=G_phys, c_phys=c_phys)
+        except RuntimeError as exc:
+            if freq_model_active in ("umh_radial_operator", "umh_shooting", "umh_radial_qnm"): 
+                print(f"[WARN] UMH radial operator failed; falling back to umh_eigen for this run: {exc}")
+                umh_mode = umh_remnant_mode_from_Mchi(Mrem_kg_src=Mrem_kg_src, chi_rem=a_rem_src, freq_model="umh_eigen", damping_model="umh_cycles",
+                    damping_cycles=float(config.get("UMH_RINGDOWN_DAMPING_CYCLES", 1.00)), boundary_softening=boundary_softening,
+                    radial_phase_model="none", radial_delay_frac=0.0, radial_delay_time_GM_c3=0.0,
+                    G_phys=G_phys, c_phys=c_phys)
+                umh_mode["shape_meta"]["radial_operator_failure"] = str(exc)
+            else: raise
+
+        f_rd_src = float(umh_mode["f_src_Hz"]); f_rd_obs = f_rd_src / z_factor
+        tau_rd_src = float(umh_mode["tau_src_s"]); tau_rd_obs = tau_rd_src * z_factor
+        if freq_model_active in ("umh_radial_operator", "umh_shooting", "umh_radial_qnm"): ringdown_seed_rule = "umh_remnant_mode_umh_radial_operator"
+        elif freq_model_active == "umh_radial_fit": ringdown_seed_rule = "umh_remnant_mode_umh_radial_fit"
+        elif freq_model_active in ("umh_omega_fit", "umh_frequency_law", "umh_coeff_fit"): ringdown_seed_rule = "umh_remnant_mode_umh_fitted_frequency_law"
+        else: ringdown_seed_rule = "umh_remnant_mode_umh_eigen_F_chi"
+        tau_seed_rule = str(umh_mode["damping_rule"])
 
 
-    # --- Map to OBSERVED frame using UMH_z_tension ----------------------
-    # Detector-frame frequencies are source-frame / (1+z_umh) when redshift is active.
-    f_rd_obs    = f_rd_src    / z_factor
-    f_isco_obs  = f_isco_src  / z_factor
+    # Choose active damping time.
+    if "tau_rd_obs" in rd_cfg: tau_rd_obs = float(rd_cfg["tau_rd_obs"]); tau_rd_src = tau_rd_obs / z_factor; tau_seed_rule = "override_tau_obs"
+    elif "tau_rd_src" in rd_cfg: tau_rd_src = float(rd_cfg["tau_rd_src"]); tau_rd_obs = tau_rd_src * z_factor; tau_seed_rule = "override_tau_src"
+    elif config.get("tau_rd_src", None) is not None: tau_rd_src = float(config["tau_rd_src"]); tau_rd_obs = tau_rd_src * z_factor; tau_seed_rule = "config_tau_src"
+    else:
+        if(umh_mode is not None and tau_rd_src is not None): pass
+        else:
+            UMH_RINGDOWN_DAMPING_CYCLES = float(config.get("UMH_RINGDOWN_DAMPING_CYCLES", 1.00))
+            tau_rd_src = UMH_RINGDOWN_DAMPING_CYCLES / max(f_rd_src, EPS_SAFE_FLOOR); tau_rd_obs = tau_rd_src * z_factor
+            tau_seed_rule = "umh_damping_cycles"
 
-    # Ensure ringdown is not below inspiral end (both are already OBSERVED frame)
-    if f_rd_obs < f_merge_obs: f_rd_obs = 1.05 * f_merge_obs
-
-    # --- Ringdown damping time tau_rd_src: from tau_rd_src or QNM -------------
-    tau_rd_cfg = rd_cfg.get("tau_rd_src", config.get("tau_rd_src", tau_rd_src))
-    if tau_rd_cfg is not None: tau_rd_src = float(tau_rd_cfg)
-    else: tau_rd_src = 0.004  # reasonable default for GW150914-like remnant
-    tau_rd_obs = tau_rd_src * z_factor
 
     # --- Optional UMH merge anchor: driver timescale vs medium relaxation ----------------
     # UMH interpretation: inspiral remains quasi-stationary while the medium can respond
@@ -1826,28 +3099,36 @@ def run_chirp_generator_test(config_overrides=None):
     # inspiral driving timescale t_drive = f/(df/dt) becomes comparable to the medium
     # relaxation time tau_rd_src. This is source-frame physics and does not rely on any
     # cosmology/expansion inference.
+    f_rd_src_eff = f_rd_src; f_rd_obs_eff = f_rd_obs; f_merge_src_eff = f_merge_src; f_merge_obs_eff = f_merge_obs
     if USE_UMH_MERGE_RELAXATION_THRESHOLD:
-        # Solve for f such that f/dfdt(f) = tau_relax (0PN/UMH Newtonian limit)
-        # df/dt = K_N * f^(11/3), with K_N determined purely by M_chirp_src and constants.
         term_merge = (G_phys * M_chirp_src_kg) / (c_phys**3)
-        K_N_merge  = (96.0 / 5.0) * (math.pi**(8.0/3.0)) * (term_merge**(5.0/3.0))
-        tau_relax  = max(float(tau_rd_src), 1e-6)
-
-        # Analytic 0PN inversion: f = [ (5/96) * pi^(-8/3) * term^(-5/3) / tau ]^(3/8)
-        inv_const  = (5.0 / 96.0) * (math.pi**(-8.0/3.0)) * (term_merge**(-5.0/3.0))
-        f_thresh   = (inv_const / tau_relax) ** (3.0/8.0)
-
-        # Bound to the analysis band (source-frame)
+        K_N_merge = (96.0 / 5.0) * (math.pi**(8.0 / 3.0)) * (term_merge**(5.0 / 3.0))
+        tau_relax = max(float(tau_rd_src), 1e-6)
+        inv_const = (5.0 / 96.0) * (math.pi**(-8.0 / 3.0)) * (term_merge**(-5.0 / 3.0))
+        f_thresh = (inv_const / tau_relax) ** (3.0 / 8.0)
         f_thresh = max(float(f_thresh), f_min_src + 3.0)
 
-        # Adopt this as the merger anchor frequency (source-frame) and map to observer-frame.
-        f_merge_src = f_thresh
-        f_merge_obs = f_merge_src / z_factor
-        merge_rule  = "umh_driver_timescale_equals_relaxation"
+        f_merge_src_eff = f_thresh; f_merge_obs_eff = f_merge_src_eff / z_factor
+        merge_rule = "umh_driver_timescale_equals_relaxation"
 
-        # Record the implied driving timescale at the merge anchor (source frame)
-        dfdt_merge  = K_N_merge * (max(f_merge_src, f_min_src) ** (11.0/3.0))
-        driver_timescale_merge_src = float(f_merge_src / max(dfdt_merge, EPS_FLOOR))
+        dfdt_merge = K_N_merge * (max(f_merge_src_eff, f_min_src) ** (11.0 / 3.0))
+        driver_timescale_merge_src = float(f_merge_src_eff / max(dfdt_merge, EPS_FLOOR))
+
+    # Ensure ringdown is not below inspiral end (both are already OBSERVED frame)
+    if f_rd_obs_eff < f_merge_obs_eff: f_rd_obs_eff = 1.05 * f_merge_obs_eff; f_rd_src_eff = f_rd_obs_eff * z_factor #Adjusted, added f_rd_src_eff = f_rd_obs_eff * z_factor 6/7/2026
+
+    # Diagnostic Block comparing QNM and UMH Mode
+    if qnm_diagnostic is not None and umh_mode is not None:
+        qnm_f_src = float(qnm_diagnostic["f_220_src_Hz"]); qnm_tau_src = float(qnm_diagnostic["tau_220_src_s"])
+        f_umh_src = float(umh_mode["f_src_Hz"]); f_umh_eff_src = float(f_rd_src_eff)
+        f_umh_base_src = float(umh_mode.get("f_src_no_radial_delay_Hz", f_umh_src))
+        umh_qnm_compare = {"qnm_f_220_src_Hz": qnm_f_src, "qnm_tau_220_src_s": qnm_tau_src,
+                            "umh_f_rd_src_Hz": f_umh_src, "umh_f_rd_eff_src_Hz": f_umh_eff_src, "umh_f_no_radial_delay_src_Hz": f_umh_base_src,
+                            "delta_umh_minus_qnm_Hz": float(f_umh_src - qnm_f_src), "delta_umh_eff_minus_qnm_Hz": float(f_umh_eff_src - qnm_f_src),
+                            "ratio_umh_to_qnm": float(f_umh_src / qnm_f_src), "ratio_umh_eff_to_qnm": float(f_umh_eff_src / qnm_f_src),
+                            "qnm_equivalent_radial_delay_frac_from_base": float((f_umh_base_src / qnm_f_src) - 1.0),
+                            "note": ("QNM is diagnostic only. qnm_equivalent_radial_delay_frac_from_base is the fractional radial-delay value that "
+                                        "would map the sharp UMH eigen frequency to the Kerr/QNM diagnostic frequency.")}
 
 
     # --- Physically motivated RING_MERGE_C1_BLEND_SEC (source-frame seconds) ---------
@@ -1857,7 +3138,7 @@ def run_chirp_generator_test(config_overrides=None):
     else:
         # Time for N_cycles of GW at the merger frequency
         N_cycles_merge = float(config.get("N_CYCLES_MERGE_RAMP", 2.0))
-        t_cycles = N_cycles_merge / max(f_merge_src, 1e-6)
+        t_cycles = N_cycles_merge / max(f_merge_src_eff, 1e-6)
         # Fraction of the ringdown damping time (medium relaxation timescale)
         frac_tau = float(config.get("F_TAU_MERGE_RAMP", 0.170))  # consider default 0.5
         t_tau = frac_tau * max(tau_rd_src, 0.0)
@@ -1878,10 +3159,9 @@ def run_chirp_generator_test(config_overrides=None):
     FREQ_RELAX_SEC = config.get("FREQ_RELAX_SEC", None)  # 0.0006, 0.0008, ~0.6 ms default
     if(FREQ_RELAX_SEC is None):
         FREQ_RELAX_KAPPA_EFF = FREQ_RELAX_KAPPA = config.get("FREQ_RELAX_KAPPA", None)              # ~1.25 -> ~0.8 ms for f_rd~252 Hz
-        if(FREQ_RELAX_KAPPA is not None): FREQ_RELAX_SEC_EFF = FREQ_RELAX_KAPPA / (2.0*math.pi*max(f_rd_src, EPS_SAFE_FLOOR))
+        if(FREQ_RELAX_KAPPA is not None): FREQ_RELAX_SEC_EFF = FREQ_RELAX_KAPPA / (2.0*math.pi*max(f_rd_src_eff, EPS_SAFE_FLOOR))
         else:
             FREQ_RELAX_SEC_EFF = (FREQ_RELAX_BETA * tau_rd_src)
-            FREQ_RELAX_KAPPA_EFF = float(2.0*math.pi*max(f_rd_src, EPS_SAFE_FLOOR) * FREQ_RELAX_SEC_EFF)
             #The same ultronic medium response that produces the Pantheon β transport coefficients also governs local frequency relaxation near compact binary merger. 
             #In the present work we parameterize the local response via a dimensionless relaxation constant κ, which is fixed by the ringdown timescale and wave coherence length. 
             #A full derivation of cosmological β parameters from local κ is left for future work.
@@ -1898,10 +3178,11 @@ def run_chirp_generator_test(config_overrides=None):
             # beta_eff(z_tension) = beta_1 + 2*beta_2*ln(1 + z_tension)
             # This relaxation strength is inherited from Pantheon+ cosmological calibration,
             # encoding medium tension transport. It is not a GW waveform fitting parameter.
-    else: FREQ_RELAX_SEC_EFF = FREQ_RELAX_SEC; FREQ_RELAX_KAPPA_EFF = float(2.0*math.pi*max(f_rd_src, EPS_SAFE_FLOOR) * FREQ_RELAX_SEC)
+    else: FREQ_RELAX_SEC_EFF = FREQ_RELAX_SEC
 
     FREQ_RELAX_SEC_EFF = min(FREQ_RELAX_SEC_EFF, FREQ_RELAX_MAX_SEC)  # e.g. 1.5 ms
     FREQ_RELAX_SEC_EFF = max(FREQ_RELAX_SEC_EFF, FREQ_RELAX_MIN_SEC)  # >=2 samples
+    FREQ_RELAX_KAPPA_EFF = float(2.0 * math.pi * max(f_rd_src_eff, EPS_SAFE_FLOOR) * FREQ_RELAX_SEC_EFF)
     config["FREQ_RELAX_SEC_EFF"]   = FREQ_RELAX_SEC_EFF
     config["FREQ_RELAX_KAPPA_EFF"] = FREQ_RELAX_KAPPA_EFF
 
@@ -1911,13 +3192,13 @@ def run_chirp_generator_test(config_overrides=None):
     N_RAMP_CYCLES   = 1.5    # about 1.5 GW cycles before f_merge
     FRAC_TAU_RAMP   = 0.3    # or 0.2–0.5; pick once and freeze
 
-    t_cycles_ramp   = N_RAMP_CYCLES / f_merge_src           # [s]
+    t_cycles_ramp   = N_RAMP_CYCLES / f_merge_src_eff           # [s]
     t_tau_ramp      = FRAC_TAU_RAMP * tau_rd_src            # [s]
     AMP_RAMP_START_SEC = min(t_cycles_ramp, t_tau_ramp)
 
     # How sharp the logistic transition is: expit(x) goes 0.1 → 0.9 over Δx ≈ 4.394. We want that to span N_WIDTH_CYCLES at f_merge.
     N_WIDTH_CYCLES  = 1.0    # ramp goes from 10%→90% over ~1 cycle
-    delta_t_width   = N_WIDTH_CYCLES / f_merge_src          # [s] - desired 10–90% width
+    delta_t_width   = N_WIDTH_CYCLES / f_merge_src_eff          # [s] - desired 10–90% width
 
     AMP_RAMP_SLOPE  = 2.0 * math.log(9.0) / delta_t_width   # [1/s]
 
@@ -1935,13 +3216,17 @@ def run_chirp_generator_test(config_overrides=None):
 
     # Persist both SOURCE and OBSERVED values into config for downstream use / metadata
     config["f_merge_src_Hz"]   = f_merge_src
+    config["f_merge_src_eff_Hz"]   = f_merge_src_eff
     config["f_rd_src_Hz"]      = f_rd_src
+    config["f_rd_src_eff_Hz"]  = f_rd_src_eff
     config["f_isco_src_Hz"]    = f_isco_src
     config["f_isco_gw_src_Hz"] = f_isco_gw_src
     config["tau_rd_obs"]       = tau_rd_obs
 
     config["f_merge_obs_Hz"]   = f_merge_obs
+    config["f_merge_obs_eff_Hz"] = f_merge_obs_eff
     config["f_rd_obs_Hz"]      = f_rd_obs
+    config["f_rd_obs_eff_Hz"]  = f_rd_obs_eff
     config["f_isco_obsHz"]     = f_isco_obs
     config["f_isco_gw_obs_Hz"] = f_isco_gw_obs
     config["tau_rd_src"]       = tau_rd_src
@@ -1957,9 +3242,9 @@ def run_chirp_generator_test(config_overrides=None):
     f_ref_obs_cfg = config.get("NORM_F_REF_OBS_HZ", None); f_ref_obs_desc="NORM_F_REF_OBS_HZ CALCULATED"
     if f_ref_obs_cfg is not None: f_ref_obs = float(f_ref_obs_cfg)
     else:
-        # If 100 Hz is inside [f_min_obs, f_merge_obs], use it (GW150914-like case)
-        if f_min_obs <= 100.0 <= f_merge_obs: f_ref_obs = 100.0
-        else: f_ref_obs  = 0.5 * (f_min_obs + f_merge_obs) # Otherwise, pick the midpoint of inspiral band
+        # If 100 Hz is inside [f_min_obs, f_merge_obs_eff], use it (GW150914-like case)
+        if f_min_obs <= 100.0 <= f_merge_obs_eff: f_ref_obs = 100.0
+        else: f_ref_obs  = 0.5 * (f_min_obs + f_merge_obs_eff) # Otherwise, pick the midpoint of inspiral band
 
         if bool(config.get("USE_PSD_FREF", False)):
             psd_map = {}
@@ -1968,12 +3253,12 @@ def run_chirp_generator_test(config_overrides=None):
             psd_map_path = os.path.join(PSD_MAP_INPUT_FOLDER, PSD_MAP_FILENAME)
             if os.path.exists(psd_map_path):
                 psd_map = load_psd_map_for_generator(psd_map_path)
-                f_ref_obs = compute_snr_weighted_fref(psd_map, f_min_obs, f_merge_obs)
+                f_ref_obs = compute_snr_weighted_fref(psd_map, f_min_obs, f_merge_obs_eff)
                 f_ref_obs_desc=f"NORM_F_REF_OBS_HZ CREATED FROM PSD MAP ({psd_map_path}) - ({f_ref_obs} Hz)"
                 
     # Hard safety clamps from physics / numerics, NOT viz: must be above f_min_obs, must be below merger and Nyquist margin
     f_ref_obs = max(f_ref_obs, 1.05 * f_min_obs)
-    f_ref_obs = min(f_ref_obs, 0.95 * f_merge_obs, 0.90 * Fn_obs)
+    f_ref_obs = min(f_ref_obs, 0.95 * f_merge_obs_eff, 0.90 * Fn_obs)
     f_ref_src = f_ref_obs * z_factor
 
     # f_ref_obs is an OBSERVED-frame reference frequency (detector band).
@@ -1982,21 +3267,20 @@ def run_chirp_generator_test(config_overrides=None):
 
     
     # ----- Use UMH, DFDT_PROFILE -----
-    # NOTE: get_gr_dfdt_coeffs() returns the GR post-Newtonian df/dt
-    # coefficients evaluated for (M1,M2,f_ref_src). In UMH, this corresponds
-    # to the GR limit of the medium dynamics; deviations would enter via
-    # a modified UMH_DFDT_COEFFS.
+    # NOTE: get_gr_dfdt_coeffs() returns the GR post-Newtonian df/dt coefficients evaluated for (M1,M2,f_ref_src). In UMH, this corresponds
+    # to the GR limit of the medium dynamics; deviations would enter via a modified UMH_DFDT_COEFFS.
     USE_UMH_DFDT_PROFILE  = bool(config.get("USE_UMH_DFDT_PROFILE", False))
+    if SPIN_MODE in ("aligned", "precessing") and has_spin and not USE_UMH_DFDT_PROFILE:
+        print("[SPIN WARNING] Spin is active, but USE_UMH_DFDT_PROFILE=False, so inspiral phase spin effects are disabled. Spin still affects the remnant/ringdown fit; "
+              "for SPIN_MODE='precessing', transverse spin also affects the polarization wrapper.")
     if USE_UMH_DFDT_PROFILE: 
-        # NOTE: Only enable PN > 2.5 for diagnostic/comparison purposes.
-        # In UMH implementation, 3.0–3.5PN terms (derived from GR) actually
-        # worsen the UMH–LIGO match. This suggests that GR needs higher-order PN
-        # strong-field corrections to approximate behavior that UMH produces
-        # more naturally, so these settings are *not* used for the primary UMH fit.
+        # Higher-order GR-limit PN coefficients are available for diagnostic and extension studies. The published GW150914/GW170814 runs use
+        # the leading-order 0PN-equivalent configuration.
         UMH_DFDT_PN_PROFILE = float(config.get("UMH_DFDT_PN_PROFILE", 0.0))
-        UMH_DFDT_COEFFS = get_gr_dfdt_coeffs(M1_kg_src, M2_kg_src, f_ref_src, eta=eta, G_phys=G_phys, c_phys=c_phys, 
-                                             UMH_DFDT_PN_PROFILE=UMH_DFDT_PN_PROFILE)
-    else: UMH_DFDT_COEFFS = None; UMH_DFDT_PN_PROFILE = None
+        UMH_DFDT_COEFFS, UMH_DFDT_SPIN_META = get_gr_dfdt_coeffs(M1_kg_src, M2_kg_src, f_ref_src, eta=eta, spin1x=spin1x, spin1y=spin1y, spin1z=spin1z, 
+                                                                 spin2x=spin2x, spin2y=spin2y, spin2z=spin2z, SPIN_MODE=SPIN_MODE, 
+                                                                 G_phys=G_phys, c_phys=c_phys, UMH_DFDT_PN_PROFILE=UMH_DFDT_PN_PROFILE)
+    else: UMH_DFDT_COEFFS = None; UMH_DFDT_SPIN_META = None; UMH_DFDT_PN_PROFILE = None
 
 
     # ----- Use UMH, Amplitude PN Profile -----
@@ -2006,6 +3290,8 @@ def run_chirp_generator_test(config_overrides=None):
     # a5 v^5          (2.5PN, non-spinning)
     # a6 v^6          (3.0PN, non-spinning)
     USE_UMH_AMP_PN_PROFILE = bool(config.get("USE_UMH_AMP_PN_PROFILE", False))
+    if SPIN_MODE in ("aligned", "precessing") and has_spin and USE_UMH_AMP_PN_PROFILE:
+        raise RuntimeError("[SPIN WARNING] USE_UMH_AMP_PN_PROFILE=True uses nonspinning amplitude PN terms; spin amplitude corrections are not included.")
     if(USE_UMH_AMP_PN_PROFILE):
         UMH_AMP_PN_PROFILE  = float(config.get("UMH_AMP_PN_PROFILE", 3.0))
         if(UMH_AMP_PN_PROFILE>3.0): UMH_AMP_PN_PROFILE = 3.0
@@ -2017,7 +3303,7 @@ def run_chirp_generator_test(config_overrides=None):
 
     # Preview / whitening band (VIZ ONLY; does NOT constrain physics track)
     lowcut_default_obs  = max(10.0, 0.8 * f_min_obs)
-    highcap_obs         = min(0.90 * Fn_obs, 1.25 * max(f_merge_obs, f_rd_obs))
+    highcap_obs         = min(0.90 * Fn_obs, 1.25 * max(f_merge_obs_eff, f_rd_obs_eff))
     lowcut_obs          = float(config.get("lowcut_obs",  lowcut_default_obs))
     highcut_obs         = float(config.get("highcut_obs", highcap_obs))
 
@@ -2056,12 +3342,12 @@ def run_chirp_generator_test(config_overrides=None):
 
     print(f"[CFG] profile={config['profile']} M1_solar_src={config['M1_solar_src']} M2_solar_src={config['M2_solar_src']}")
 
-    if(M_tot_kg_est_src != M_tot_kg_src): 
-        print(f"[CFG - DIFF] M_tot_kg_src Calculated={M_tot_kg_src}, M_tot_kg_est_src Estimated from Non Spinning Mass={M_tot_kg_est_src}")
-        M_tot_kg_src = M_tot_kg_est_src; 
-    else: print(f"[CFG - SAME] M_tot_kg_src & M_tot_kg_est_src are exactly the same: Calculated={M_tot_kg_est_src}")
+    print(f"[REMNANT] Mtot_src={M_tot_kg_src / M_sun:.6f} Msun Mrem_src={Mrem_solar_src:.6f} Msun E_rad_frac={E_rad_frac:.9f} a_rem={a_rem_src:.6f} " 
+          f"SPIN_MODE={SPIN_MODE} spin1x={spin1x:+.4f} spin1y={spin1y:+.4f} spin1z={spin1z:+.4f} spin2x={spin2x:+.4f} spin2y={spin2y:+.4f} spin2z={spin2z:+.4f} "
+          f"fit={remnant_approximant}")
 
-    print(f"[BAND] f_min_obs={f_min_obs:.1f},  f_merge_obs={f_merge_obs:.1f}, f_rd_obs={f_rd_obs:.1f}, f_isco_obs={f_isco_obs:.1f}, lowcut_obs={lowcut_obs:.1f}, highcut_obs={highcut_obs:.1f}, Fn_obs={Fn_obs:.1f}")
+    print(f"[BAND] f_min_obs={f_min_obs:.1f},  f_merge_obs_eff={f_merge_obs_eff:.1f}, f_rd_obs_eff={f_rd_obs_eff:.1f}, f_isco_obs={f_isco_obs:.1f}, "
+          f"lowcut_obs={lowcut_obs:.1f}, highcut_obs={highcut_obs:.1f}, Fn_obs={Fn_obs:.1f}")
     if(UMH_z_tension_info is not None): print(UMH_z_tension_info)
 
     # Diagnostic call (e.g. for GW150914-like system), for Illustration Only.
@@ -2146,46 +3432,50 @@ def run_chirp_generator_test(config_overrides=None):
     name_list = list(detectors.keys())
 
     # --- PN-0 (Newtonian) inspiral frequency sweep setup ---
-    # --- PN-0 duration for f_min_src → f_merge_src (use the same target we will splice at) ---
+    # --- PN-0 duration for f_min_src → f_merge_src_eff (use the same target we will splice at) ---
     # Choose the *actual* merge target for PN timing (bounded by the band)
-    f_merge_use_pn = float(np.clip(f_merge_src, f_min_src + 3.0, 0.90 * highcut_src))
+    f_merge_use_pn = float(np.clip(f_merge_src_eff, f_min_src + 3.0, 0.90 * highcut_src))
 
-    # --- PN-0 duration for f_min_src → f_merge_src ---
+    # --- PN-0 duration for f_min_src → f_merge_src_eff ---
     # Example target: 35→250 Hz with (36,29) Msun
-    T_pn_src = pn_duration_sec(M_chirp_src_kg, f_min_src, f_merge_use_pn, G_phys, c_phys)  # ~0.19 s  # duration of inspiral until f_merge_src
-    t_merge_src = T_pn_src                        # when inspiral reaches f_merge_src
+    T_pn_src = pn_duration_sec(M_chirp_src_kg, f_min_src, f_merge_use_pn, G_phys, c_phys)  # ~0.19 s  # duration of inspiral until f_merge_src_eff
+    t_merge_src = T_pn_src                        # when inspiral reaches f_merge_src_eff
     t_merge_obs = t_merge_src * z_factor
     # Largest geometric delay across detectors (already in seconds)
     tau_max = max(det["geom_delay_sec"] for det in detectors.values())
 
     RD_TAIL_SEC = max(10.0 * tau_rd_src, 0.08)
-    # total duration: inspiral (to f_merge_src) + merge window + ringdown tail
+    # total duration: inspiral (to f_merge_src_eff) + merge window + ringdown tail
     T_total_src = t_merge_src + RD_TAIL_SEC              # source-frame physics
-    # total duration: inspiral (to f_merge_obs) + merge window + ringdown tail, expressed in *observer* seconds
+    # total duration: inspiral (to f_merge_obs_eff) + merge window + ringdown tail, expressed in *observer* seconds
     T_total_obs = t_merge_obs + tau_max + RD_TAIL_SEC    # observer-frame window
 
     Nt_obs = int(np.ceil(T_total_obs / dt_obs))
     t_max = Nt_obs * dt_obs; tc_eff = t_merge_src; tc_dynamic = None
     print(f"[PN] Duration {f_min_src:.1f}→{f_merge_use_pn:.1f} Hz = {T_pn_src:.3f} s | "
-          f"t_merge_src={t_merge_src:.3f}s | T_total_src={T_total_src:.3f}s | Nt_obs={Nt_obs} | f_rd_src≈{f_rd_src:.1f} Hz | f_merge_src={f_merge_src:.1f}")
+          f"t_merge_src={t_merge_src:.3f}s | T_total_src={T_total_src:.3f}s | Nt_obs={Nt_obs} | f_rd_src_eff≈{f_rd_src_eff:.1f} Hz | f_merge_src_eff={f_merge_src_eff:.1f}")
 
     #Term and Kn Defined.
     term = (G_phys * M_chirp_src_kg) / (c_phys**3)
     K_N  = (96.0 / 5.0) * (math.pi**(8.0/3.0)) * (term**(5.0/3.0))
 
-    # If using UMH / PN-style high-order df/dt, rescale K_N so that the inspiral f_min_src -> f_merge_src duration matches the target t_merge_src.
+    # If using UMH / PN-style high-order df/dt, rescale K_N so that the inspiral f_min_src -> f_merge_src_eff duration matches the target t_merge_src.
     if USE_UMH_DFDT_PROFILE and (UMH_DFDT_COEFFS is not None):
-        T_dfdt = estimate_merge_time_from_dfdt(K_N, f_min_src, f_merge_src, f_ref_src, UMH_DFDT_COEFFS, n_steps=16000)
-        if (T_dfdt is not None) and (T_dfdt > 0.0):
-            scale = T_dfdt / t_merge_src   # T(K_N) = I / K_N → K_eff = K_N * (T_dfdt / t_merge_src)
-            K_N *= scale
-            print(f"[UMH dfdt] Base T_dfdt={T_dfdt:.6f}s, target t_merge_src={t_merge_src:.6f}s, rescaling K_N by {scale:.6f}")
-        dfdt_merge = dfdt_highorder(K_N, f_ref_src, f_merge_src, coeffs=UMH_DFDT_COEFFS)
-    else: dfdt_merge = K_N * (f_merge_src ** (11.0 / 3.0))  # Newtonian fallback if profile disabled
+        T_dfdt = estimate_merge_time_from_dfdt(K_N, f_min_src, f_merge_src_eff, f_ref_src, UMH_DFDT_COEFFS, n_steps=16000)
+        if(config.get("SPIN_PRESERVE_PN0_DURATION", True)):
+            if (T_dfdt is not None) and (T_dfdt > 0.0):
+                scale = T_dfdt / t_merge_src   # T(K_N) = I / K_N → K_eff = K_N * (T_dfdt / t_merge_src)
+                K_N *= scale
+                print(f"[UMH dfdt] Base T_dfdt={T_dfdt:.6f}s, target t_merge_src={t_merge_src:.6f}s, rescaling K_N by {scale:.6f}")
+        else: 
+            t_merge_src = T_dfdt
+            print(f"[UMH dfdt] Base T_dfdt={T_dfdt:.6f}s, target t_merge_src={t_merge_src:.6f}s, not rescaling K_N, SPIN_PRESERVE_PN0_DURATION=False")
+        dfdt_merge = dfdt_highorder(K_N, f_ref_src, f_merge_src_eff, coeffs=UMH_DFDT_COEFFS)
+    else: dfdt_merge = K_N * (f_merge_src_eff ** (11.0 / 3.0))  # Newtonian fallback if profile disabled
 
     # --- Clamp the merge slope for a stable Hermite ramp ---
     dfdt_merge_eff = dfdt_merge
-    delta_f = max(f_rd_src - f_merge_src, 0.0)
+    delta_f = max(f_rd_src_eff - f_merge_src_eff, 0.0)
     if RING_MERGE_C1_BLEND_SEC > 0.0:
         secant  = delta_f / RING_MERGE_C1_BLEND_SEC
         # Fritsch–Carlson style monotone limit: s0 <= 3 * secant
@@ -2200,14 +3490,14 @@ def run_chirp_generator_test(config_overrides=None):
     else: frequency_smoothing = "None"
 
     # Default Arrays Setup.
-    if(USE_SOL_ENV):
+    if(SOURCE_ENGINE in ("soliton_umh", "hybrid_umh")):
         # Setup Soliton Arrays.
         PML_N    = int(config.get("PML_THICKNESS", 8))
         phi      = np.zeros((Nx, Ny, Nz), dtype=dtype)
         phi_prev = np.zeros_like(phi)
         phi_next = np.zeros_like(phi)
         
-        A_raw_Sol         = np.zeros(Nt_obs, dtype=USE_SOL_ENVdtype)                                        # UMH soliton probe amplitude 
+        A_raw_Sol         = np.zeros(Nt_obs, dtype=dtype)                                        # UMH soliton probe amplitude 
         sol_strain_record = np.zeros(Nt_obs, dtype=dtype)
         freq_record_sol   = np.zeros(Nt_obs, dtype=dtype) # Soliton-derived f_GW(t) (diagnostic, source frame)
 
@@ -2236,7 +3526,7 @@ def run_chirp_generator_test(config_overrides=None):
     f_prev    = f_start
     f_smooth  = f_start
 
-    if(USE_SOL_ENV):
+    if(SOURCE_ENGINE in ("soliton_umh", "hybrid_umh")):
         f_sol_smooth = None   # current smoothed soliton f_gw estimate (Hz, source time)
         sol_win_len = max(64, int(round(SOL_FREQ_HILBERT_WINDOW_SEC / dt_src)))
         sol_win_len = min(sol_win_len, Nt_obs)
@@ -2265,36 +3555,36 @@ def run_chirp_generator_test(config_overrides=None):
             else: dfdt  = K_N * (max(f_insp, f_min_src)**(11.0/3.0))
 
             f_trial = f_insp + dfdt * dt_src
-            if (f_trial >= f_merge_src):
+            if (f_trial >= f_merge_src_eff):
                 tc_dynamic = time + dt_src            # first step where we reach merge frequency
                 tc_eff     = tc_dynamic
-                f_insp     = f_merge_src              # lock at exact f_merge_src at tc_eff
-                f_smooth   = f_merge_src
+                f_insp     = f_merge_src_eff              # lock at exact f_merge_src_eff at tc_eff
+                f_smooth   = f_merge_src_eff
 
                 dfdt_merge = max(dfdt, EPS_FLOOR)
             else: f_insp = f_trial
 
         if (not RINGDOWN_ENABLE) or (tc_eff is None) or (time < tc_eff) or tc_dynamic is None: f_raw = f_insp  # Inspiral only (no ringdown), or we haven't reached merge yet  
         elif USE_QNM_OVERTONE_ATTACH: 
-            if (time >= tc_eff) and (time <= tc_eff + RING_MERGE_C1_BLEND_SEC): f_raw = f_merge_src; f_gw  = f_merge_src
-            else: f_raw = f_merge_src
+            if (time >= tc_eff) and (time <= tc_eff + RING_MERGE_C1_BLEND_SEC): f_raw = f_merge_src_eff; f_gw  = f_merge_src_eff
+            else: f_raw = f_merge_src_eff
         elif (RING_MERGE_C1_BLEND_SEC > 0.0) and (time <= tc_eff + RING_MERGE_C1_BLEND_SEC):
-            # C¹ Hermite ramp: f_merge_src → f_rd_src
+            # C¹ Hermite ramp: f_merge_src_eff → f_rd_src_eff
             u = (time - tc_eff) / RING_MERGE_C1_BLEND_SEC
             u = max(0.0, min(1.0, u))
             h00 =  2.0*u**3 - 3.0*u**2 + 1.0
             h10 =      u**3 - 2.0*u**2 + u
             h01 = -2.0*u**3 + 3.0*u**2
             h11 =      u**3 -     u**2
-            dfdt_merge_end = 0.0  # flat at f_rd_src
-            f_raw = (h00 * f_merge_src + h10 * RING_MERGE_C1_BLEND_SEC * dfdt_merge_eff + h01 * f_rd_src + h11 * RING_MERGE_C1_BLEND_SEC * dfdt_merge_end)
+            dfdt_merge_end = 0.0  # flat at f_rd_src_eff
+            f_raw = (h00 * f_merge_src_eff + h10 * RING_MERGE_C1_BLEND_SEC * dfdt_merge_eff + h01 * f_rd_src_eff + h11 * RING_MERGE_C1_BLEND_SEC * dfdt_merge_end)
         else:
             if RING_MERGE_C1_BLEND_SEC <= 0.0:          # If no RING_MERGE_C1_BLEND_SEC, adjust to ringdown frequency.
-                f_target = f_rd_src
+                f_target = f_rd_src_eff
                 adj = math.exp(-dt_src / float(FREQ_RELAX_SEC_EFF))
                 # f_prev is last-step frequency. This makes the transition continuous.
                 f_raw = f_target + (f_prev - f_target) * adj
-            else: f_raw = f_rd_src              # RING_MERGE_C1_BLEND_SEC, it will already merge to ringdown.
+            else: f_raw = f_rd_src_eff                  # RING_MERGE_C1_BLEND_SEC, it will already merge to ringdown.
 
         # Optional df/dt limiter
         f_inst = f_raw
@@ -2311,11 +3601,11 @@ def run_chirp_generator_test(config_overrides=None):
             f_gw_candidate = f_smooth
 
         # Prevent inspiral frequency from decreasing due to numerical noise; allow flat ringdown afterward
-        if time <= tc_eff + RING_MERGE_C1_BLEND_SEC: f_pn = max(f_gw_candidate, f_prev)    # Treat ramp as part of monotone rise to f_rd_src
+        if time <= tc_eff + RING_MERGE_C1_BLEND_SEC: f_pn = max(f_gw_candidate, f_prev)    # Treat ramp as part of monotone rise to f_rd_src_eff
         else: f_pn = f_gw_candidate                             # after ramp, allow flat/decay
 
         # Optional soliton blend (source frame)
-        if USE_SOL_ENV and (f_sol_smooth is not None):
+        if(SOURCE_ENGINE in ("soliton_umh", "hybrid_umh")) and (f_sol_smooth is not None):
             if (SOL_FREQ_BLEND > 0.0 and SOL_FREQ_MODE == "blend"): f_gw = (1.0 - SOL_FREQ_BLEND) * f_pn + SOL_FREQ_BLEND * f_sol_smooth
             elif SOL_FREQ_MODE == "soliton": f_gw = f_sol_smooth # Soliton is authoritative, with a basic safety fallback
             else: f_gw = f_pn
@@ -2441,7 +3731,7 @@ def run_chirp_generator_test(config_overrides=None):
     
         if t_idx % 1024 == 0: print(f"[Step:{t_idx}]: t={time:.3f}s, f_gw={f_gw:.2f}Hz, r_grid={r_grid:.2f}, amp_phys={amp_phys:.3e}")
         
-        if(USE_SOL_ENV):
+        if(SOURCE_ENGINE in ("soliton_umh", "hybrid_umh")):
             # Recompute solitons            
             radius = max(10.0, soliton_radius * (r_grid / r0))
 
@@ -2516,7 +3806,7 @@ def run_chirp_generator_test(config_overrides=None):
 
 
     # choose source envelope: analytic or soliton-probe
-    if USE_SOL_ENV: 
+    if(SOURCE_ENGINE in ("soliton_umh", "hybrid_umh")): 
         A_raw_phys = A_raw.copy()
 
         peak_sol     = float(np.max(np.abs(A_raw_Sol))) + EPS_FLOOR
@@ -2715,19 +4005,20 @@ def run_chirp_generator_test(config_overrides=None):
     # --- Physics-based normalization ---
     # If PHYSICS_NORM_ENABLE is True, set the overall amplitude using a
     # simple GR inspiral scaling:  h ~ (G M_chirp_obs / c^2)^(5/3) (π f_obs)^(2/3) / D_L
-    # where f_obs is a characteristic observer-frame frequency (e.g. near f_merge_obs) and D_L is the observer luminosity distance.
+    # where f_obs is a characteristic observer-frame frequency (e.g. near f_merge_obs_eff) and D_L is the observer luminosity distance.
     # This is independent of APPLY_UMH_AMPLITUDE_SCALING and APPLY_UMH_FREQ_REDSHIFT: those only change how we define f_obs and
     # M_chirp_obs, not the structure of the scaling.
     # Amplitude scaling here is NOT a GR luminosity-distance correction. Distance is geometric (non-expanding).
     # UMH_z_tension affects amplitude via time dilation of energy transport (arrival rate + phase stretching), applied once globally.
-    UMH_z_tension_amp_eff=0.0
+    UMH_z_tension_amp_eff=0.0; D_L_norm_m = None
     if PHYSICS_NORM_ENABLE:
         f_hist = ensure_f_hist_from_phase(phase_hist_use, dt_obs, dtype=dtype) 
         #UMH-consistent quadrupole amplitude (no cosmological redshift expansion factor).
-        if(APPLY_UMH_AMPLITUDE_SCALING): UMH_z_tension_amp_eff = UMH_z_tension
-        h_ref  = newtonian_h_at_f_umh(f_ref_obs, M_chirp_src_kg, d_geom_m, z_tension=UMH_z_tension_amp_eff, G_phys=G_phys, c_phys=c_phys)
-
         idx    = int(np.nanargmin(np.abs(f_hist - f_ref_obs)))
+        if(APPLY_UMH_AMPLITUDE_SCALING): UMH_z_tension_amp_eff = UMH_z_tension; D_L_norm_m = D_L_umh_m; norm_distance_desc = "full D_L^UMH"
+        else: UMH_z_tension_amp_eff = 0.0; D_L_norm_m = d_geom_m; norm_distance_desc = "D_geom diagnostic"
+        #h_ref  = newtonian_h_at_f_umh(f_ref_obs, M_chirp_src_kg, d_geom_m, z_tension=UMH_z_tension_amp_eff, G_phys=G_phys, c_phys=c_phys)
+        h_ref = newtonian_h_at_f_umh(f_ref_src, M_chirp_src_kg, D_L_norm_m, G_phys=G_phys, c_phys=c_phys)
         A_ref  = float(np.abs(A_hist_use[idx]))
         epsA   = EPS_SAFE_FLOOR     #1e-24  # bigger than machine eps; avoids crazy gain
         if not np.isfinite(A_ref) or A_ref < epsA: 
@@ -2742,7 +4033,8 @@ def run_chirp_generator_test(config_overrides=None):
                 print(f"[PHYS_NORM] Warning: G_amp={G_amp:.3e} out of range; skipping.")
             else:
                 A_hist_use *= G_amp
-                print(f"[PHYS_NORM] Applied global gain G_amp={G_amp:.3e} at f_ref_obs={f_ref_obs:.1f} Hz.")
+                #print(f"[PHYS_NORM] Applied global gain G_amp={G_amp:.3e} at f_ref_obs={f_ref_obs:.1f} Hz.")
+                print(f"[PHYS_NORM] Applied global gain G_amp={G_amp:.3e} at f_ref_obs={f_ref_obs:.3f} Hz / f_ref_src={f_ref_src:.3f} Hz using {norm_distance_desc}={D_L_norm_m:.6e} m.")
                 strain_scale_comment = "Calibrated to physics scale (not fit). Peak |h| matches model at given distance."
     else: h_ref = None; G_amp = None; strain_scale_comment = ""
     # ---- End Single global physics normalization (scalar gain)
@@ -2780,16 +4072,41 @@ def run_chirp_generator_test(config_overrides=None):
     phase_at  = PchipInterpolator(t_ext, phase_ext, extrapolate=False)
 
     # Polarization scalars
-    cosi      = np.cos(BINARY_IOTA)             #BINARY_IOTA_DEG in radians.
-    APLUS     = 0.5 * (1.0 + cosi * cosi)
-    ACROSS    = cosi
+    #cosi      = np.cos(BINARY_IOTA)             #BINARY_IOTA_DEG in radians.
+    #APLUS     = 0.5 * (1.0 + cosi * cosi)
+    #ACROSS    = cosi
 
     # Used to generate polarization for NPZ transparently.
     A_obs     = np.asarray(A_hist_use, dtype=dtype)
     phase_obs = np.unwrap(np.asarray(phase_hist_use, dtype=dtype))
     # Intrinsic source-frame polarizations on the same grid:
-    h_plus_obs  = A_obs * APLUS  * np.cos(phase_obs)
-    h_cross_obs = A_obs * ACROSS * np.sin(phase_obs)
+    
+    SPIN_MODE = str(SPIN_MODE).lower(); precession_meta = None
+    if SPIN_MODE in ("none", "aligned"): h_plus_obs, h_cross_obs = build_polarizations_nonprecessing(A_obs, phase_obs, BINARY_IOTA)
+    elif SPIN_MODE == "precessing":
+        t_peak_target = float(t_merge_obs)
+        PRECESSION_STRENGTH=float(config.get("PRECESSION_STRENGTH", 1.0))
+        PRECESSION_MAX_BETA_DEG=float(config.get("PRECESSION_MAX_BETA_DEG", 45.0))
+        PRECESSION_MAX_HZ=float(config.get("PRECESSION_MAX_HZ", 64.0))
+        PRECESSION_FREEZE_AFTER_PEAK=bool(config.get("PRECESSION_FREEZE_AFTER_PEAK", True))
+        PRECESSION_INCLUDE_THOMAS_PHASE=bool(config.get("PRECESSION_INCLUDE_THOMAS_PHASE", False))
+        PRECESSION_INCLUDE_POLARIZATION_ROTATION=bool(config.get("PRECESSION_INCLUDE_POLARIZATION_ROTATION", True))
+        h_plus_obs, h_cross_obs, precession_meta = build_polarizations_precessing(t_obs=t_obs, dt_obs=dt_obs, A_obs=A_obs, phase_obs=phase_obs,
+                                                                                  M1_solar_src=M1_solar_src, M2_solar_src=M2_solar_src, z_factor=z_factor,
+                                                                                  spin1x=spin1x, spin1y=spin1y, spin1z=spin1z, spin2x=spin2x, spin2y=spin2y, 
+                                                                                  spin2z=spin2z, iota_rad=BINARY_IOTA, D_L_umh_Mpc=D_L_umh_Mpc,
+                                                                                  f_min_obs=f_min_obs, t_peak_target=t_peak_target,
+                                                                                  PRECESSION_STRENGTH=PRECESSION_STRENGTH,
+                                                                                  PRECESSION_MAX_BETA_DEG=PRECESSION_MAX_BETA_DEG,
+                                                                                  PRECESSION_MAX_HZ=PRECESSION_MAX_HZ,
+                                                                                  PRECESSION_FREEZE_AFTER_PEAK=PRECESSION_FREEZE_AFTER_PEAK,
+                                                                                  PRECESSION_INCLUDE_THOMAS_PHASE=PRECESSION_INCLUDE_THOMAS_PHASE,
+                                                                                  PRECESSION_INCLUDE_POLARIZATION_ROTATION=PRECESSION_INCLUDE_POLARIZATION_ROTATION,
+                                                                                  return_meta=True, G_phys=G_phys, c_phys=c_phys, M_sun=M_sun)
+    else: raise RuntimeError(f"Unhandled SPIN_MODE={SPIN_MODE}")
+
+    #h_plus_obs  = A_obs * APLUS  * np.cos(phase_obs)
+    #h_cross_obs = A_obs * ACROSS * np.sin(phase_obs)
 
     # === Per-detector synthesis (no clipping needed; pad covers all delays) ===
     det_meta, strain_records_viz = {}, {}
@@ -2863,15 +4180,28 @@ def run_chirp_generator_test(config_overrides=None):
         if(UMH_DFDT_PN_PROFILE>=2.5): dfdt_orders_inc.append("2.5PN")
         if(UMH_DFDT_PN_PROFILE>=3.0): dfdt_orders_inc.append("3PN")
         if(UMH_DFDT_PN_PROFILE>=3.5): dfdt_orders_inc.append("3.5PN")
-
+        
+        SPIN_MODE = str(SPIN_MODE).lower()
+        if SPIN_MODE == "none": spin_effects_note = "not included; SPIN_MODE='none', component spins forced to zero"
+        elif SPIN_MODE == "aligned":
+            spin_effects_note = ("aligned-spin, nonprecessing support: component z-spins enter the NR/EOB remnant fit and ringdown; leading spin-orbit df/dt term is "
+                                 "included only when UMH_DFDT_PN_PROFILE >= 1.5")
+        else:
+            spin_effects_note = ("approximate precessing support: scalar df/dt uses only the z-projected spin components when UMH_DFDT_PN_PROFILE >= 1.5; "
+                                 "transverse spin enters through the simple-precession polarization wrapper, not through scalar df/dt.")
+        if SPIN_MODE in ("aligned", "precessing") and UMH_DFDT_PN_PROFILE >= 1.5:
+            coeff_note = (f"Coefficients C2..C7 are GR-limit quasi-circular coefficients evaluated at f_ref_src = {f_ref_src} Hz, with the leading aligned-spin spin-orbit "
+                          f"term included in C3 through beta_SO.")
+        else: coeff_note = (f"Coefficients C2..C7 are standard nonspinning GR-limit quasi-circular coefficients evaluated at f_ref_src = {f_ref_src} Hz.")
         dfdt_model = {"dfdt_model": "UMH_highorder_dfdt",
           "orders_included": dfdt_orders_inc, #["0PN", "1PN", "1.5PN", "2PN", "2.5PN", "3PN", "3.5PN"],
-          "spin_effects": "not included (non-spinning binary)",
-          "implementation_note": f"Coefficients C2..C7 are set to standard GR (non-spinning, quasi-circular) values evaluated at f_ref_src = {f_ref_src} Hz for this configuration.\n"
-          "In this run, the UMH phase evolution is locked to the GR limit (UMH_DFDT_COEFFS = GR); "
-
-          "In this implementation, UMH_z_tension is applied only through the effective distance D_eff in the amplitude. The df/dt and phase evolution are computed in the "
-          "GR limit using source-frame masses; any UMH-induced modification to observed frequencies is intentionally not included here."}
+          "spin_effects": spin_effects_note,
+          "implementation_note": coeff_note + "\n"+ "In this run, the UMH phase evolution is locked to the GR limit (UMH_DFDT_COEFFS = GR); "
+          "The UMH source--observer mapping is applied by generating the chirp with source-frame masses and source-frame frequencies, "
+          "then mapping to observer-frame frequency/time through z_factor = 1 + z_UMH. "
+          "Amplitude normalization uses the full UMH effective luminosity distance D_L^UMH, including the Pantheon+-calibrated transmission factor."}
+          #"In this implementation, UMH_z_tension is applied only through the effective distance D_eff in the amplitude. The df/dt and phase evolution are computed in the "
+          #"GR limit using source-frame masses; any UMH-induced modification to observed frequencies is intentionally not included here."}
     else: dfdt_model = {"dfdt_model": "None"}
 
 
@@ -2894,7 +4224,6 @@ def run_chirp_generator_test(config_overrides=None):
             amp_ins_model = ("Amplitude PN requested <2PN, but amplitude PN begins at 2PN; result = Newtonian (0PN) amplitude only.")
             amp_higher_order_PN = ("No valid amplitude PN terms below 2PN; using pure Newtonian amplitude.")
     else: amp_ins_model = "Newtonian (0PN) amplitude: h(f) ~ [M_c^(5/3) f^(2/3) / D_UMH]"; amp_higher_order_PN = "Amplitude PN corrections disabled (pure 0PN)."
-    #else: amp_ins_model = "Newtonian (0PN) amplitude: h(f) ∝ [M_c^(5/3) f^(2/3) / D_UMH]"; amp_higher_order_PN = "Amplitude PN corrections disabled (pure 0PN)."
 
     
     if config.get("GENERATE_NPZ", True):
@@ -2911,7 +4240,7 @@ def run_chirp_generator_test(config_overrides=None):
             profile             = None if profile is None else str(profile),
             event_utc           = None if sidereal_date_str is None else str(sidereal_date_str),
 
-            USE_SOL_ENV         = True if(USE_SOL_ENV) else False,
+            SOURCE_ENGINE       = str(SOURCE_ENGINE),
             A_obs_probe         = A_obs,
             radius              = None if radius_record is None else radius_record,
             time                = t_array,
@@ -2937,14 +4266,16 @@ def run_chirp_generator_test(config_overrides=None):
             freq_track_src_Hz   = freq_record_src,
             freq_track_obs_Hz   = freq_record_obs,
             phase_track_rad     = phase_hist_use,
-            f_min_src           = float(f_min_src), f_merge_src=float(f_merge_src),
-            f_min_obs           = float(f_min_obs), f_merge_obs=float(f_merge_obs),
+            f_min_src           = float(f_min_src), f_merge_src=float(f_merge_src), f_merge_src_eff=float(f_merge_src_eff),
+            f_min_obs           = float(f_min_obs), f_merge_obs=float(f_merge_obs), f_merge_obs_eff=float(f_merge_obs_eff),
             lowcut_src          = float(lowcut_src), highcut_src=float(highcut_src),
             lowcut_obs          = float(lowcut_obs), highcut_obs=float(highcut_obs),
             highcap_obs         = float(highcap_obs),
 
             f_rd_src            = float(f_rd_src),
+            f_rd_src_eff        = float(f_rd_src_eff),
             f_rd_obs            = float(f_rd_obs),
+            f_rd_obs_eff        = float(f_rd_obs_eff),
             tau_rd_src          = float(tau_rd_src),
             tau_rd_obs          = float(tau_rd_obs),
             pre_pad_sec         = float(pre_pad_sec),
@@ -2995,6 +4326,11 @@ def run_chirp_generator_test(config_overrides=None):
         np.savez(f"{file_path}_Freq.npz", t=np.arange(Nt_obs)*dt_obs, freq=freq_record_obs.astype(dtype), f_for_downstream=f_insp, dtype=dtype)
 
     # --- Rich JSON metadata for peer review (antenna patterns etc.) ---
+    SPIN_MODE = str(SPIN_MODE).lower()
+    if SPIN_MODE == "none": spin_model_note = "nonspinning; dominant (2,2) nonprecessing polarization"
+    elif SPIN_MODE == "aligned": spin_model_note = "aligned-spin nonprecessing; dominant (2,2) polarization"
+    else: spin_model_note = ("approximate simple-precession dominant-mode wrapper; time-dependent iota(t) and polarization rotation psi(t) are applied; "
+                             "not a full IMR precessing model and does not include higher modes")
     meta = {
         "profile":          None if profile is None else str(profile),
         "event_utc":        None if sidereal_date_str is None else str(sidereal_date_str),
@@ -3009,18 +4345,34 @@ def run_chirp_generator_test(config_overrides=None):
         "M2_kg_obs":        float(M2_kg_src * z_factor), "M2_solar_obs": float(M2_solar_src * z_factor),
         "M_chirp_obs_kg":   float(M_chirp_src_kg * z_factor),
         
-        "remnant_mass_Msun_src": float(Mrem_solar_src),
-        "remnant_spin_src": float(a_rem_src),
+        "spin_model":       spin_model_note,
+        "spin_mode":        str(SPIN_MODE),
+        "spin1x": float(spin1x), "spin1y": float(spin1y), "spin1z": float(spin1z),
+        "spin2x": float(spin2x), "spin2y": float(spin2y), "spin2z": float(spin2z),
+        "precession_meta":  precession_meta,
 
-        "remnant_mass_Msun_obs": float(Mrem_solar_src * z_factor),
+        "remnant_fit_approximant": str(remnant_approximant),
+        "remnant_mass_Msun_src":   float(Mrem_solar_src),
+        "remnant_spin_src":        float(a_rem_src),
+        "remnant_mass_Msun_obs":   float(Mrem_solar_src * z_factor),
+        "E_rad_frac":       float(E_rad_frac),
         
         "inclination_rad":  float(BINARY_IOTA),
         "inclination_deg":  float(BINARY_IOTA_DEG),
 
+        "ringdown_seed_rule":     ringdown_seed_rule,
+        "tau_seed_rule":          tau_seed_rule,
+        "qnm_diagnostic":         qnm_diagnostic,
+        "qnm_used_for_active_ringdown": bool(RINGDOWN_SEED_MODE == "qnm_diagnostic"),
+        "umh_remnant_mode": None if umh_mode is None else umh_mode,
+        "umh_qnm_compare":  umh_qnm_compare,
+
         "f_min_src":        float(f_min_src),
         "f_min_obs":        float(f_min_obs),
         "f_merge_src":      float(f_merge_src),
+        "f_merge_src_eff":  float(f_merge_src_eff),
         "f_merge_obs":      float(f_merge_obs),
+        "f_merge_obs_eff":  float(f_merge_obs_eff),
         "merge_rule":       merge_rule,
         "driver_timescale_merge_src": driver_timescale_merge_src,
         "lowcut_src":       float(lowcut_src), "highcut_src": float(highcut_src),
@@ -3028,13 +4380,16 @@ def run_chirp_generator_test(config_overrides=None):
         "highcap_obs":      float(highcap_obs),
 
         "f_rd_src_Hz":      float(f_rd_src),
+        "f_rd_src_eff_Hz":  float(f_rd_src_eff),
         "f_rd_obs_Hz":      float(f_rd_obs),
+        "f_rd_obs_eff_Hz":  float(f_rd_obs_eff),
         "tau_rd_src":       float(tau_rd_src),
         "tau_rd_obs":       float(tau_rd_obs),
-        "f_rd_src_predicted_Hz":    float(f_rd_src_est),
-        "tau_rd_src_predicted_s":   float(tau_rd_src_est),
-        "f_rd_obs_predicted_Hz":    float(f_rd_obs_est),
-        "tau_rd_obs_predicted_s":   float(tau_rd_obs_est),
+
+        "qnm_f_220_src_Hz":         (None if qnm_diagnostic is None else float(qnm_diagnostic["f_220_src_Hz"])),
+        "qnm_tau_220_src_s":        (None if qnm_diagnostic is None else float(qnm_diagnostic["tau_220_src_s"])),
+        "qnm_f_220_obs_Hz":         (None if qnm_diagnostic is None else float(qnm_diagnostic["f_220_obs_Hz"])),
+        "qnm_tau_220_obs_s":        (None if qnm_diagnostic is None else float(qnm_diagnostic["tau_220_obs_s"])),
 
         "f_isco_src_Hz":    float(f_isco_src),
         "f_isco_gw_src_Hz": float(f_isco_gw_src),
@@ -3099,12 +4454,12 @@ def run_chirp_generator_test(config_overrides=None):
 
         
         "Soliton_Settings": {
-            "USE_SOLITON_FOR_ENVELOPE":     True if(USE_SOL_ENV) else False,
-            "SOL_ENV_MODE":                 str(config.get("SOL_ENV_MODE", "mix")).lower()      if(USE_SOL_ENV) else None,
-            "SOL_ENV_ALPHA":                float(config.get("SOL_ENV_ALPHA",            0.35)) if(USE_SOL_ENV) else None,
-            "SOL_ENV_MAX_DEV":              float(config.get("SOL_ENV_MAX_DEV",          0.35)) if(USE_SOL_ENV) else None,
-            "SOL_ENV_POST_TAPER_MS":        float(config.get("SOL_ENV_POST_TAPER_MS",    0.35)) if(USE_SOL_ENV) else None,
-            "SOL_ENV_SMOOTH_CUTOFF_HZ":     float(config.get("SOL_ENV_SMOOTH_CUTOFF_HZ", 0.35)) if(USE_SOL_ENV) else None,
+            "SOURCE_ENGINE":                str(SOURCE_ENGINE),
+            "SOL_ENV_MODE":                 str(config.get("SOL_ENV_MODE", "mix")).lower()      if(SOURCE_ENGINE in ("soliton_umh", "hybrid_umh")) else None,
+            "SOL_ENV_ALPHA":                float(config.get("SOL_ENV_ALPHA",            0.35)) if(SOURCE_ENGINE in ("soliton_umh", "hybrid_umh")) else None,
+            "SOL_ENV_MAX_DEV":              float(config.get("SOL_ENV_MAX_DEV",          0.35)) if(SOURCE_ENGINE in ("soliton_umh", "hybrid_umh")) else None,
+            "SOL_ENV_POST_TAPER_MS":        float(config.get("SOL_ENV_POST_TAPER_MS",    0.35)) if(SOURCE_ENGINE in ("soliton_umh", "hybrid_umh")) else None,
+            "SOL_ENV_SMOOTH_CUTOFF_HZ":     float(config.get("SOL_ENV_SMOOTH_CUTOFF_HZ", 0.35)) if(SOURCE_ENGINE in ("soliton_umh", "hybrid_umh")) else None,
         },
 
         "UMH_z_Tension": {
@@ -3121,8 +4476,21 @@ def run_chirp_generator_test(config_overrides=None):
             "PHYSICS_NORM_ENABLE":          bool(PHYSICS_NORM_ENABLE),
             "APPLY_UMH_AMPLITUDE_SCALING":  bool(APPLY_UMH_AMPLITUDE_SCALING),
             "UMH_z_tension_amp_eff":        None if UMH_z_tension_amp_eff is None else float(UMH_z_tension_amp_eff),
-            "d_geom_m":                     float(d_geom_m),
-            "D_eff_m":                      None if UMH_z_tension_amp_eff is None else float(d_geom_m * (1.0 + UMH_z_tension_amp_eff)),
+            
+            "D_L_umh_input_Mpc":    float(D_L_umh_input_Mpc),
+            "D_L_umh_Mpc":          float(D_L_umh_Mpc),
+            "D_L_umh_m":            float(D_L_umh_m),
+            "D_L_norm_m":           None if D_L_norm_m is None else float(D_L_norm_m),
+
+            "d_geom_Mpc":           float(d_geom_Mpc),
+            "d_geom_m":             float(d_geom_m),
+            "T_umh":                None if T_umh is None else float(T_umh),
+
+            "f_ref_obs_Hz":         None if f_ref_obs is None else float(f_ref_obs),
+            "f_ref_src_Hz":         None if f_ref_src is None else float(f_ref_src),
+            "normalization_frequency_convention":
+                "Envelope sample selected at observer-frame f_ref_obs; quadrupole amplitude evaluated at source-frame f_ref_src using source-frame chirp mass.",
+
             "G_amp":                        None if G_amp is None else float(G_amp),
         },
 
@@ -3140,8 +4508,7 @@ def run_chirp_generator_test(config_overrides=None):
             "UMH_z_tension": None if UMH_z_tension is None else float(UMH_z_tension),
             "z_GR_equivalent": None if z_GR is None else float(z_GR),
             "normalization_law": "Global amplitude scaling fixed by the UMH tension-redshift relation calibrated on Pantheon+; no per-event or per-detector tuning",
-            "envelope_model": "Optional soliton-based amplitude modulation (USE_SOLITON_FOR_ENVELOPE). Disabled in this run for performance, but demonstrates microscopic "
-            "UMH medium effects when active."
+            "envelope_model": "SOURCE_ENGINE is set to analytic_umh for this run for performance, but demonstrates microscopic UMH medium effects when soliton_umh or hybrid_umh."
           },
         },
 
@@ -3150,7 +4517,8 @@ def run_chirp_generator_test(config_overrides=None):
         "implementation_note": (
           "In this configuration, df/dt and phase are generated in the GR limit using source-frame masses. If APPLY_UMH_FREQ_REDSHIFT=True, the source "
           "phase/envelope are mapped to detector time via t_det = (1+z_freq) * t_obs with z_freq taken from UMH_z_tension (or z_GR), so that f_det = f_src/(1+z_freq). "
-          "Amplitude normalization always uses the UMH tension-redshift law via D_eff."
+          "Amplitude normalization uses the full UMH effective luminosity distance D_L^UMH when APPLY_UMH_AMPLITUDE_SCALING=True; "
+          "no separate D_eff or extra (1+z)^-1 amplitude factor is applied."
         ),
     }
     with open(f"{file_path}_GEN_Metadata.json", "w") as f:  # encoding="utf-8"
@@ -3158,10 +4526,8 @@ def run_chirp_generator_test(config_overrides=None):
 
 
     # --- Visuals no physics impact, for preview before comparing to LIGO ---
-    # NOTE: All operations below (noise injection, visual scaling, tapers,
-    # spectrogram upsampling) are for figures ONLY.
-    # They operate on strain_viz_use / strain_viz_spect_use and do NOT touch
-    # the stored physics strain_records.
+    # NOTE: All operations below (noise injection, visual scaling, tapers, spectrogram upsampling) are for figures ONLY.
+    # They operate on strain_viz_use / strain_viz_spect_use and do NOT touch the stored physics strain_records.
     if config.get("GENERATE_VISUAL_PREVIEWS", True):
 
         if not strain_records_viz: raise RuntimeError("No detector strain records found (check detectors config / delays).")
@@ -3504,15 +4870,15 @@ def run_chirp_generator_test(config_overrides=None):
 
         # Match frequency track length to reference strain length
         if len(f_used) < n_target:
-            f_used = np.pad(f_used, (0, n_target - len(f_used)), constant_values=f_rd_obs)
+            f_used = np.pad(f_used, (0, n_target - len(f_used)), constant_values=f_rd_obs_eff)
         elif len(f_used) > n_target: f_used = f_used[:n_target]  # safety trim
 
-        # Optional smooth approach to f_rd_obs near the tail (plotting only, not physics)
+        # Optional smooth approach to f_rd_obs_eff near the tail (plotting only, not physics)
         tailN = min(int(0.05 / dt_obs), max(len(f_used) // 20, 0))
         if tailN > 3:
             f0 = f_used[-tailN - 1]
             w = 0.5 * (1.0 - np.cos(np.linspace(0.0, np.pi, tailN)))
-            f_used[-tailN:] = (1.0 - w) * f0 + w * f_rd_obs
+            f_used[-tailN:] = (1.0 - w) * f0 + w * f_rd_obs_eff
 
         # Time axis for intrinsic frequency track
         t_freq = np.arange(len(f_used)) * dt_obs
@@ -3531,7 +4897,7 @@ def run_chirp_generator_test(config_overrides=None):
         if 'phase_hist_use' in locals():
             f_analytic = ensure_f_hist_from_phase(phase_hist_use, dt_obs, dtype=float)
             if len(f_analytic) < len(f_used):
-                f_analytic = np.pad(f_analytic, (0, len(f_used) - len(f_analytic)), constant_values=f_rd_obs)
+                f_analytic = np.pad(f_analytic, (0, len(f_used) - len(f_analytic)), constant_values=f_rd_obs_eff)
             elif len(f_analytic) > len(f_used): f_analytic = f_analytic[:len(f_used)]
 
             f_analytic_plot = np.where(amp_mask, f_analytic, np.nan)
@@ -3542,7 +4908,7 @@ def run_chirp_generator_test(config_overrides=None):
         plt.plot(t_freq, f_used_plot, lw=1.0, alpha=0.8, label=r'Numerical $f_{\mathrm{GW}}(t)$ record')
 
         # Ringdown frequency reference
-        plt.axhline(f_rd_obs, color='red', lw=1.0, ls='--', label=fr'Ringdown $f_{{\mathrm{{rd}}}} = {f_rd_obs:.1f}\ \mathrm{{Hz}}$')
+        plt.axhline(f_rd_obs_eff, color='red', lw=1.0, ls='--', label=fr'Ringdown $f_{{\mathrm{{rd}}}} = {f_rd_obs_eff:.1f}\ \mathrm{{Hz}}$')
 
         # Axes, limits, labels
         plt.xlabel("Time [s]")
@@ -3655,7 +5021,7 @@ def run_chirp_generator_test(config_overrides=None):
 
         # --- Model instantaneous frequency track from generator (freq_record) ---
 
-        if len(f_track) < len(f_hilb): f_track = np.pad(f_track, (0, len(f_hilb) - len(f_track)), constant_values=f_rd_obs)
+        if len(f_track) < len(f_hilb): f_track = np.pad(f_track, (0, len(f_hilb) - len(f_track)), constant_values=f_rd_obs_eff)
         elif len(f_track) > len(f_hilb): f_track = f_track[:len(f_hilb)]
 
         f_model_plot = np.where(~np.isnan(f_hilb_plot), f_track, np.nan)
@@ -3680,8 +5046,7 @@ def run_chirp_generator_test(config_overrides=None):
         axins.grid(True, which='both', ls=':')
 
 
-        # Hilbert-derived instantaneous frequency (data-driven) 
-        #ax.plot(t_hilb, f_hilb_plot, lw=1.0, alpha=0.8, label=r'Hilbert instantaneous $f_{\mathrm{GW}}(t)$ (strain)')
+        # Hilbert-derived instantaneous frequency (data-driven)
         ax.plot(t_hilb, f_hilb_plot, lw=1.0, alpha=0.8, label=r'Hilbert instantaneous $f_{\mathrm{GW}}(t)$')
 
         # Model PN+ringdown track from generator
@@ -3696,7 +5061,7 @@ def run_chirp_generator_test(config_overrides=None):
             except Exception: pass
 
         # Ringdown reference line
-        ax.axhline(f_rd_obs, color='C0', ls='--', label=fr'Ringdown $f_{{\mathrm{{rd}}}} = {f_rd_obs:.1f}\ \mathrm{{Hz}}$')
+        ax.axhline(f_rd_obs_eff, color='C0', ls='--', label=fr'Ringdown $f_{{\mathrm{{rd}}}} = {f_rd_obs_eff:.1f}\ \mathrm{{Hz}}$')
         ax.axvline(t_merge_obs, color='k', ls='--', alpha=0.6, label=fr'$t_\mathrm{{merge}} = {t_merge_obs:.3f}\ \mathrm{{s}}$')
 
         # Axes + limits
@@ -3704,7 +5069,7 @@ def run_chirp_generator_test(config_overrides=None):
         ax.set_xlabel("Time [s]")
         ax.set_ylabel(r'$f_{\mathrm{GW}}(t)$ [Hz]')
         ax.set_xlim(0.0, t_cut)
-        ax.set_ylim(0.0, max(1.3 * f_rd_obs, 300.0))
+        ax.set_ylim(0.0, max(1.3 * f_rd_obs_eff, 300.0))
         ax.grid(True, alpha=0.3)
 
         # Use model track where it exists and t_hilb < t_merge_obs
@@ -3746,6 +5111,7 @@ def cli_float(value: str) -> float:
 # Main Entry Points of Script.
 if __name__ == "__main__":
     overrides = {"profile": "replica_gw150914"}         # Used to Specify Override Profile to use.
+    #overrides = {"profile": "replica_gw170814"}         # Used to Specify Override Profile to use.
     #if len(sys.argv) > 1:
     #    with open(sys.argv[1], "r") as f: overrides.update(json.load(f))
     #run_chirp_generator_test(overrides)
@@ -3771,7 +5137,17 @@ if __name__ == "__main__":
     parser.add_argument("--dec_deg",  type=cli_float)
     parser.add_argument("--pol_psi_deg",  type=cli_float)
     parser.add_argument("--BINARY_IOTA_DEG",  type=cli_float)
-
+    parser.add_argument("--SPIN_MODE", type=str)
+    parser.add_argument("--spin1x", type=cli_float)
+    parser.add_argument("--spin1y", type=cli_float)
+    parser.add_argument("--spin1z", type=cli_float)
+    parser.add_argument("--spin2x", type=cli_float)
+    parser.add_argument("--spin2y", type=cli_float)
+    parser.add_argument("--spin2z", type=cli_float)
+    parser.add_argument("--chi1z", type=cli_float)
+    parser.add_argument("--chi2z", type=cli_float)
+    parser.add_argument("--REMNANT_APPROXIMANT", type=str)
+    
     args = parser.parse_args()
 
     cfg_path = args.config_path_named or args.config_path
@@ -3791,6 +5167,10 @@ if __name__ == "__main__":
     if args.ra_deg is not None:       overrides["ra_deg"]  = args.ra_deg
     if args.dec_deg is not None:      overrides["dec_deg"] = args.dec_deg
     if args.pol_psi_deg is not None:  overrides["pol_psi_deg"]   = args.pol_psi_deg
-    if args.BINARY_IOTA_DEG is not None:  overrides["BINARY_IOTA_DEG"] = args.BINARY_IOTA_DEG
+    if args.BINARY_IOTA_DEG is not None:  overrides["BINARY_IOTA_DEG"] = args.BINARY_IOTA_DEG   
+
+    for key in ("SPIN_MODE", "spin1x", "spin1y", "spin1z", "spin2x", "spin2y", "spin2z", "chi1z", "chi2z", "REMNANT_APPROXIMANT"):
+        val = getattr(args, key, None)
+        if val is not None: overrides[key] = val
 
     run_chirp_generator_test(overrides)

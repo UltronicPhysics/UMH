@@ -2,19 +2,25 @@
 UMH_Ligo_Compiler.py
 
 Author: Andrew Dodge
-Date: June 2025
+Publication comparison pipeline for:
+    Forward Generation of the GW150914 Gravitational-Wave Signal
+    from a Constrained Propagation Model
 
-Description:
-UMH Ligo Compiler, for use with UMH_Chirp_Generator.
+Loads the independently generated UMH detector strains and public
+GWOSC calibrated strain data, applies identical signal conditioning,
+establishes one global network registration anchor, and evaluates
+fixed-registration diagnostics.
 
-Parameters:
-- OUTPUT_FOLDER
+Outputs include:
+    - whitened time-domain comparisons
+    - residuals
+    - spectrogram comparisons
+    - ASD diagnostics
+    - fixed-window correlations
+    - fixed-assumption SNR diagnostics
+    - JSON summary/provenance records
 
-Inputs:
-- None
-
-Output:
-- Produces Wave Slices and 3d models.
+No waveform generation occurs in this program.
 """
 import numpy as np
 import os, time
@@ -41,10 +47,19 @@ def get_default_config(config_overrides=None):
     base = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
     return {
         #All Settings.
-        "LIGO_DATA":{
+        #"Use_Event": "LIGO_DATA_GW170814",
+        "profile":   "replica_gw150914",
+
+
+        "LIGO_DATA_GW150914":{
             "Hanford":    "PlanckData/H-H1_LOSC_16_V1-1126259446-32.hdf5",
             "Livingston": "PlanckData/L-L1_LOSC_16_V1-1126259446-32.hdf5",
-            #"Virgo": "PlanckData/V-V1_LOSC_16_V1-1126259446-32.hdf5"
+        },
+
+        "LIGO_DATA_GW170814":{
+            "Hanford":    "PlanckData/H-H1_GWOSC_16KHZ_R1-1186741846-32.hdf5",
+            "Livingston": "PlanckData/L-L1_GWOSC_16KHZ_R1-1186741846-32.hdf5",
+            "Virgo":      "PlanckData/V-V1_GWOSC_16KHZ_R1-1186741846-32.hdf5",
         },
 
         "ALLOW_GLOBAL_POLARITY_FLIP":    True,
@@ -59,17 +74,29 @@ def get_default_config(config_overrides=None):
 
         "USE_RIDGE_DIAGNOSTIC":          True,
 
-        "USE_MERGE_LOC_FOR_PEAK":       False,
+        "USE_MERGE_LOC_FOR_PEAK":        True,
 
 
         "NOTCH_LINES": [60,120,180,240,331,500],
 
-        "PSD_MODE": "window",
-        "PSD_GUARD_SEC": 2.0,
-        "PSD_PRE_START_SEC": 12.0,   # use ~4–12 s if event at 16 s
-        "PSD_PRE_END_SEC": 4.0,
-        "PSD_USE_POST_WINDOW": False,  # turn on only if you have enough data after event
-        "PSD_DROP_FILTER_TRANSIENT_SEC": 1.0,
+        "PSD_MODE":                  "window",
+        "NPER_PSD":                      4096,
+        "NOVER_PSD":                     2048,
+        "PSD_GUARD_SEC":                  2.0,
+        "PSD_PRE_START_SEC":             12.0,  # use ~4–12 s if event at 16 s
+        "PSD_PRE_END_SEC":                4.0,
+        "PSD_USE_POST_WINDOW":          False,  # turn on only if you have enough data after event
+        "PSD_DROP_FILTER_TRANSIENT_SEC":  1.0,
+
+        "PSD_USE_LOCKED_EVENT_TIME":     True,
+        "PRINT_LOCKED_REPROCESS_DIAG":   True,
+
+        "STRICT_NETWORK_REPROCESS":      True,  # final validation only
+        "REPROCESS_ANCHOR_LOCKED":      False,  # sweep default
+        "REPROCESS_NONANCHORS_LOCKED":   True,  # sweep default
+        "FIXED_ANCHOR":                  None,  # or "Hanford", "Livingston"
+        "USE_CACHED_LIGO_PSD":          False,
+        "USE_CACHED_LIGO_WHITENED":     False,
 
 
         "DPI":300, #PNG Resolution.
@@ -327,6 +354,293 @@ def meas_delay_xcorr_sec(fs, a1_w, b1_w, idx_center, halfwin_sec=0.15, maxlag_se
 # ---- End Helper Functions ----
 
 
+# ------------------------------
+# Conditioning + PSD + whitening (common PSD)
+# ------------------------------
+def Condition_Wave(config, detector, fs, strain_full, band_lo, band_hi, notch_lines, f_psd=None, Pxx=None, dtype=np.float64, debug="LIGO", locked_event_sec=None):
+    cond_full = condition_time_domain(strain_full, fs, band_lo, band_hi, notch_lines, dtype=dtype)
+    cond_full = sanitize(cond_full, name=f"{detector}:{debug}:cond_full")
+    N_cf_len  = len(cond_full)
+
+    # Event time estimate, or locked event time if network anchor already decided.
+    if locked_event_sec is not None and np.isfinite(float(locked_event_sec)):
+        t_event_sec = float(locked_event_sec); idx_event = int(np.clip(round(t_event_sec * fs), 0, N_cf_len - 1))
+        print(f"PreCheck Alignment: [{detector}] using LOCKED t_event ≈ {t_event_sec:.6f} s for {debug}")
+    else:
+        # Event time estimate within a plausible window (GW150914 in 32s LOSC is ~16.4 s)
+        # --- Event-time estimate (robust two-stage) ---
+        t_event_sec, idx_event = estimate_event_time_seconds_hilbert(cond_full, fs, t_bounds=(15.0, 22.0), debug_tag=detector, dtype=dtype)
+        # fallback to full 10–22 window if nothing above threshold
+        if t_event_sec < 15.0 or t_event_sec > 22.0: 
+            t_event_sec, idx_event = estimate_event_time_seconds_hilbert(cond_full, fs, t_bounds=(10.0, 22.0), debug_tag=detector, dtype=dtype)
+        print(f"PreCheck Alignment: [{detector}] estimated t_event ≈ {t_event_sec:.6f} s (from {debug} Hilbert envelope)")
+        # End: Event-time estimate.
+
+    # Estimate PSD Whitening based on off-source data LIGO only
+    if(f_psd is None and Pxx is None):
+        def _slice_indices(t_start, t_end, fs, N):
+            i0 = int(round(t_start * fs))
+            i1 = int(round(t_end   * fs))
+            i0 = max(0, min(N, i0))
+            i1 = max(0, min(N, i1))
+            if i1 <= i0: return None
+            return i0, i1
+                
+        mask = np.ones(N_cf_len, dtype=bool)
+        # Drop initial filter transient region (helps avoid startup artifacts)     
+        psd_mode = str(config.get("PSD_MODE", "window")).lower()           
+        drop_sec = float(config.get("PSD_DROP_FILTER_TRANSIENT_SEC", 1.0))
+        i_drop = int(round(drop_sec * fs))
+
+        if psd_mode == "window":
+            guard     = float(config.get("PSD_GUARD_SEC", 2.0))
+            pre_start = float(config.get("PSD_PRE_START_SEC", 12.0))
+            pre_end   = float(config.get("PSD_PRE_END_SEC",   4.0))
+
+            # Pre-event window: [t_event - pre_start, t_event - pre_end]
+            t0_pre = t_event_sec - pre_start
+            t1_pre = t_event_sec - pre_end
+
+            sl_pre = _slice_indices(t0_pre, t1_pre, fs, N_cf_len)
+            chunks = []
+
+            if sl_pre is not None:
+                i0, i1 = sl_pre
+                i0 = max(i0, i_drop)
+                if i1 > i0: chunks.append(cond_full[i0:i1])
+
+            # Optional post-event window: [t_event + post_start, t_event + post_end]
+            if bool(config.get("PSD_USE_POST_WINDOW", False)):
+                post_start = float(config.get("PSD_POST_START_SEC", 4.0))
+                post_end   = float(config.get("PSD_POST_END_SEC",   12.0))
+                t0_post = t_event_sec + post_start
+                t1_post = t_event_sec + post_end
+
+                sl_post = _slice_indices(t0_post, t1_post, fs, N_cf_len)
+                if sl_post is not None:
+                    i0, i1 = sl_post
+                    i0 = max(i0, i_drop)
+                    if i1 > i0: chunks.append(cond_full[i0:i1])
+
+            if len(chunks) == 0:
+                # Fallback: original mask approach if windows don't fit in the file Exclude guard band around event
+                i0g = max(0, int(round((t_event_sec - guard) * fs)))
+                i1g = min(N_cf_len, int(round((t_event_sec + guard) * fs)))
+                mask[i0g:i1g] = False
+                # Exclude initial transient
+                mask[:i_drop] = False
+                l_for_psd = cond_full[mask]
+                print(f"[{detector}] PSD_MODE=window (fallback->mask), PSD samples={len(l_for_psd)}")
+            else:
+                l_for_psd = np.concatenate(chunks)
+                print(f"[{detector}] PSD_MODE=window, PSD samples={len(l_for_psd)} "
+                        f"(pre={'yes' if sl_pre else 'no'}, post={'yes' if bool(config.get('PSD_USE_POST_WINDOW', False)) else 'no'})")
+        else:
+            # psd_mode == "mask" -> keep original behavior (but add a bigger guard if desired)
+            guard = float(config.get("PSD_GUARD_SEC", 2.0))
+            i0g = max(0, int(round((t_event_sec - guard) * fs)))
+            i1g = min(N_cf_len, int(round((t_event_sec + guard) * fs)))
+            mask[i0g:i1g] = False
+            mask[:i_drop] = False
+            l_for_psd = cond_full[mask]
+            print(f"[{detector}] PSD_MODE=mask, PSD samples={len(l_for_psd)}")
+
+        # Generate PSD for use in Whitening.
+        NPER_PSD = int(config.get("NPER_PSD", config.get("NPER", 4096)))
+        NOVER_PSD = int(config.get("NOVER_PSD", config.get("NOVER", 2048)))
+        f_psd, Pxx = estimate_psd_from_ligo(l_for_psd, fs, nperseg=NPER_PSD, noverlap=NOVER_PSD, dtype=dtype)
+    # End: Estimate PSD Whitening based on off-source data LIGO only
+            
+    # ---------------------------------
+    # Optional: Very light glitch gating
+    # ---------------------------------
+    gate_glitches = bool(config.get("GATE_GLITCHES", False))
+    if gate_glitches:
+        # Hilbert envelope of the conditioned strain_full
+        env_full = np.abs(hilbert(cond_full))
+        med_env  = np.median(env_full)
+
+        # Define a high threshold so we only touch real spikes e.g. 8× the median envelope
+        k_thresh = float(config.get("GATE_ENV_FACTOR", 8.0))
+        thresh   = k_thresh * med_env
+
+        # Protect a window around the GW event so we never gate the chirp itself
+        protect_before = float(config.get("GATE_PROTECT_BEFORE_SEC", 0.25))
+        protect_after  = float(config.get("GATE_PROTECT_AFTER_SEC", 0.35))
+        t = np.arange(len(cond_full)) / fs
+        protect = (t >= (t_event_sec - protect_before)) & \
+                    (t <= (t_event_sec + protect_after))
+
+        # Candidate glitch points: envelope above threshold AND outside the chirp window
+        glitch_pts = (env_full > thresh) & (~protect)
+
+        # Build a smooth gate (Tukey-ish) around each glitch point
+        gate = np.ones_like(cond_full, dtype=float)
+        half_width = int(float(config.get("GATE_HALF_WIDTH_SEC", 0.03)) * fs)  # ~30 ms by default
+
+        idxs = np.where(glitch_pts)[0]
+        for idx in idxs:
+            i0 = max(0, idx - half_width)
+            i1 = min(len(gate), idx + half_width)
+            n  = i1 - i0
+            if n <= 3: continue
+            # simple cosine taper from 1 → 0 → 1
+            window = 0.5 * (1.0 - np.cos(2.0 * np.pi * np.arange(n) / (n - 1)))
+            gate[i0:i1] = np.minimum(gate[i0:i1], 1.0 - 0.9 * window)
+
+        # Apply gate to the conditioned strain_full
+        cond_full *= gate
+    # End: Optional: Very light glitch gating
+
+
+    # Whiten the entire conditioned LIGO time series with that PSD
+    w_full = whiten_with_psd(cond_full, fs, f_psd, Pxx, dtype=dtype)
+    w_full = sanitize(w_full, name=f"{detector}:{debug}:w_full")
+
+    return w_full, cond_full, f_psd, Pxx, t_event_sec
+
+
+
+# ------------------------------
+# Envelope-based fine alignment near true peaks
+# ------------------------------
+def Fine_Align(config, detector, fs, ligo_w_full, umh_w_full, umh_cond_full, idx_merge_loc=None):
+    N = len(ligo_w_full)
+            
+    #Find Peak, using coarse peak, exclude areas around peak to stop_idx inadvertantly picking another lobe.
+    edge_exclude_crs_sec = float(config.get("FIT_EDGE_EXCLUDE_CRS_SEC", 0.5))
+    edge_exclude_crs     = int(edge_exclude_crs_sec * fs)
+    #Find Peak, secondary using fine peak detection.
+    edge_exclude_sec     = float(config.get("FIT_EDGE_EXCLUDE_SEC", 0.05))
+    edge_exclude         = int(edge_exclude_sec * fs)           
+    search_half_sec      = float(config.get("FIT_SEARCH_HALF_SEC", 0.2))
+    search_half          = int(search_half_sec * fs)
+
+    env_ligo = np.abs(hilbert(ligo_w_full))
+
+    # ------------------------------
+    # LIGO peak: data-only, but expected-time locked (preferred)
+    # ------------------------------
+    if idx_merge_loc is not None:
+        idx_expected = int(np.clip(idx_merge_loc, 0, N - 1))
+        idx_ligo_peak, idx_ligo_peak_sub = find_peak_loudest_significant(fs, env_ligo, idx_expected=idx_expected, half_width=search_half,
+            edge_exclude=edge_exclude, smooth_ms=float(config.get("PEAK_SMOOTH_MS", 12.0)), k_mad=float(config.get("PEAK_K_MAD", 6.0)),
+            max_offset_sec=float(config.get("PEAK_MAX_OFFSET_SEC", 0.08)), tie_radius_sec=float(config.get("PEAK_TIE_RADIUS_SEC", 0.01)))
+        idx_ligo_peak_crs = idx_expected; idx_ligo_peak = int(idx_ligo_peak); idx_ligo_peak_sub = float(idx_ligo_peak_sub)
+        print(f"[{detector}] LIGO peak locked to t_merge_obs: idx_expected={idx_expected}, idx_ligo_peak={idx_ligo_peak}, idx_ligo_peak_sub={idx_ligo_peak_sub}")
+    else:
+        # Fallback to legacy behavior if no t_merge_obs provided
+        idx_ligo_peak_crs = primary_peak(env_ligo, N, edge_exclude_crs)
+        idx_ligo_peak, idx_ligo_peak_sub = find_peak_loudest_significant(fs, env_ligo, idx_expected=idx_ligo_peak_crs, half_width=search_half,
+            edge_exclude=edge_exclude, smooth_ms=float(config.get("PEAK_SMOOTH_MS", 12.0)), k_mad=float(config.get("PEAK_K_MAD", 6.0)),
+            max_offset_sec=float(config.get("PEAK_MAX_OFFSET_SEC", 0.08)), tie_radius_sec=float(config.get("PEAK_TIE_RADIUS_SEC", 0.01)))
+        idx_ligo_peak = int(idx_ligo_peak); idx_ligo_peak_sub = float(idx_ligo_peak_sub)
+        print(f"[{detector}] Legacy LIGO peak: idx_ligo_peak_crs={idx_ligo_peak_crs}, idx_ligo_peak={idx_ligo_peak}, idx_ligo_peak_sub={idx_ligo_peak_sub}")
+
+    # ------------------------------
+    # UMH peak: DO NOT PICK. Anchor deterministically to t_merge_obs.
+    # (Optional tiny local refine could be allowed, but not needed.)
+    # ------------------------------
+    if idx_merge_loc is not None:
+        idx_umh_peak = int(np.clip(idx_merge_loc, 0, N - 1))
+        print(f"[{detector}] UMH peak ANCHORED to t_merge_obs: idx_umh_peak={idx_umh_peak}")
+    else:
+        # Fallback legacy UMH peak picking
+        env_umh  = np.abs(hilbert(umh_w_full))
+        j0 = max(0, idx_ligo_peak - search_half); j1 = min(N, idx_ligo_peak + search_half)
+        idx_umh_peak = j0 + int(np.argmax(env_umh[j0:j1]))
+        idx_merge_loc = idx_umh_peak
+        print(f"[{detector}] Legacy UMH peak picked: idx_umh_peak={idx_umh_peak}")
+
+    peak_lag         = idx_ligo_peak - idx_umh_peak
+    tau              = peak_lag / fs
+    umh_w_full_aa    = fractional_delay_fft(umh_w_full, fs, tau)
+    umh_cond_full_aa = fractional_delay_fft(umh_cond_full, fs, tau)
+
+    idx_merge_loc = int(round(idx_merge_loc + tau * fs))
+    idx_merge_loc = int(np.clip(idx_merge_loc, 0, len(umh_w_full_aa) - 1))
+
+    #Sub Align peak to find exact alignment from coarse peak.
+    idx_center, idx_center_sub = Sub_Align(N, umh_w_full_aa, idx_ligo_peak, search_half)
+
+    # Apply residual sub-sample shift so UMH peak sits exactly on LIGO peak
+    residual_lag_samples = idx_center_sub - idx_ligo_peak
+    tau_resid            = -residual_lag_samples / fs   # note the minus sign: shift UMH toward LIGO
+
+    lag_meas_sec_pre  = (idx_center_sub - idx_ligo_peak) / fs
+    t_peak_ligo_abs   = float(idx_ligo_peak_sub) / float(fs)
+
+    if abs(tau_resid) > 1e-9:  # avoid pointless FFT work
+        umh_w_full_aa    = fractional_delay_fft(umh_w_full_aa,    fs, tau_resid)
+        umh_cond_full_aa = fractional_delay_fft(umh_cond_full_aa, fs, tau_resid)
+        idx_center       = idx_ligo_peak  # by construction, we've just aligned peaks
+                            
+        idx_merge_loc    = int(round(idx_merge_loc + tau_resid * fs))
+        idx_merge_loc    = int(np.clip(idx_merge_loc, 0, len(umh_w_full_aa) - 1))
+
+        # recompute sub-align on the corrected UMH
+        _, idx_center_sub2 = Sub_Align(N, umh_w_full_aa, idx_ligo_peak, search_half)
+        lag_meas_sec  = (idx_center_sub2 - idx_ligo_peak) / fs
+    else: idx_center  = int(round(idx_center_sub)); lag_meas_sec = lag_meas_sec_pre; idx_center_sub2 = 0
+            
+    mf_gate_samp = float(config.get("MF_ALIGN_GATE_SAMP", 0.25))  # quarter-sample default
+    dsec_int, dsec_sub, _ = meas_delay_xcorr_sec(fs, ligo_w_full, umh_w_full_aa, idx_center, halfwin_sec=0.15, maxlag_sec=0.01)
+    print(f"[{detector}] Fine_Align: lag_meas_sec:{lag_meas_sec} dsec_int:{dsec_int} dsec_sub={dsec_sub}")
+    if abs(dsec_sub) * fs >= mf_gate_samp:
+        umh_w_full_aa    = fractional_delay_fft(umh_w_full_aa,    fs, -dsec_sub)
+        umh_cond_full_aa = fractional_delay_fft(umh_cond_full_aa, fs, -dsec_sub)
+        idx_merge_loc    = int(np.clip(int(round(idx_merge_loc + (-dsec_sub * fs))), 0, N-1))
+        idx_center       = int(np.clip(int(round(idx_center    + (-dsec_sub * fs))), 0, N-1))
+        idx_center_sub2  = np.clip(idx_center_sub2 + (-dsec_sub * fs), 0, N-1)
+        dsec_int2, dsec_sub2, _ = meas_delay_xcorr_sec(fs, ligo_w_full, umh_w_full_aa, idx_center, halfwin_sec=0.15, maxlag_sec=0.01)
+        print(f"[{detector}] Fine_Align: meas_delay_xcorr_sec: dsec_int2:{dsec_int2} dsec_sub2={dsec_sub2}")
+
+    # Define fit window around idx_center (now effectively aligned with LIGO peak)
+    fit_before_sec    = float(config.get("FIT_WIN_BEFORE_SEC", 0.18))
+    fit_after_sec     = float(config.get("FIT_WIN_AFTER_SEC", 0.22))
+    win_before        = int(fit_before_sec * fs)
+    win_after         = int(fit_after_sec  * fs)
+
+    i0 = max(0, idx_center - win_before)
+    i1 = min(N, idx_center + win_after)
+    if (i1 - i0) < int(0.15 * fs):
+        half = int(0.175 * fs)
+        i0   = max(0, idx_center - half)
+        i1   = min(N, idx_center + half)
+
+    return umh_w_full_aa, umh_cond_full_aa, i0, i1, idx_ligo_peak, idx_center, \
+            idx_merge_loc, lag_meas_sec, tau, tau_resid, t_peak_ligo_abs, dsec_int, dsec_sub
+
+
+def Fine_Stretch(config, detector, fs, ligo_w_full, umh_w_full_aa, umh_cond_full_aa, i0, i1, idx_center, dtype=np.float64):
+    S_MIN, S_MAX, N_STEPS = 0.98, 1.02, 21
+    IMPROVE_EPS, ABS_MIN  = 0.02, 0.15
+
+    lw_win = ligo_w_full[i0:i1].astype(dtype)
+    uw_win =  umh_w_full_aa[i0:i1].astype(dtype)
+
+    s_best, uw_warp_win, corr_best = best_stretch_by_corr(lw_win, uw_win, fs, s_min=S_MIN, s_max=S_MAX, n_steps=N_STEPS, dtype=dtype)
+    # Baseline (s=1) correlation for gating
+    corr_unity = best_stretch_by_corr(lw_win, uw_win, fs, s_min=1.0, s_max=1.0, n_steps=1, dtype=dtype)[2]
+
+    if (np.isfinite(s_best)
+        and abs(s_best - 1.0) > 1e-6
+        and (corr_best - corr_unity) > IMPROVE_EPS
+        and corr_best > ABS_MIN):
+
+        # Stretch ABOUT the current MF-peak anchor
+        i_peak     = int(idx_center)   # envelope-locked center from step 4
+        umh_w = time_stretch_about_anchor(umh_w_full_aa, s_best, i_peak, dtype=dtype)
+        umh_cond = time_stretch_about_anchor(umh_cond_full_aa, s_best, i_peak, dtype=dtype)
+        stretch_accepted = True
+
+        print(f"PreCheck Alignment: [{detector}] fine-stretch ACCEPTED: s_best={s_best:.5f}, corr_search={corr_best:.3f}, baseline={corr_unity:.3f}")
+
+    else: print(f"PreCheck Alignment: [{detector}] fine-stretch REJECTED: s_best={s_best:.5f}, corr_search={corr_best:.3f}, baseline={corr_unity:.3f}")
+
+    return umh_w, umh_cond, stretch_accepted, corr_best, corr_unity
+
+
 # ------------ Fractional-delay and Coarse Alignment utilities ------------
 def fractional_delay_fft(x: np.ndarray, fs: float, tau_s: float) -> np.ndarray:
     """
@@ -348,9 +662,7 @@ def fractional_delay_fft(x: np.ndarray, fs: float, tau_s: float) -> np.ndarray:
 def coarse_align_template(ligo_w_full, umh_w, fs, t_min=10.0, t_max=22.0):
     """
     Coarse alignment for GW150914-like event.
-    Treat umh_w as a short template; slide it over ligo_w_full (whitened)
-    and find the best start_idx in [t_min, t_max].
-
+    Treat umh_w as a short template; slide it over ligo_w_full (whitened) and find the best start_idx in [t_min, t_max].
     Returns (corr_max, start_index), with corr_max in [0,1].
     """
     x = np.asarray(ligo_w_full, float)
@@ -394,24 +706,27 @@ def coarse_align_template(ligo_w_full, umh_w, fs, t_min=10.0, t_max=22.0):
 
     return coeff, start_idx
 
-def align_umh_to_global(config, detector, fs, N_ligo, start_idx, t_merge_obs, umh_w_full, umh_cond_full,
-                        anchor_i0_snr, anchor_i1_snr, anchor_idx_center, geom_delay_sec_eff):
+def align_umh_to_global(config, detector, fs, N_ligo, start_idx, t_merge_obs, umh_w_full, umh_cond_full, anchor_i0, anchor_i1, 
+                        anchor_i0_snr, anchor_i1_snr, anchor_idx_center, anchor_event_sec, geom_delay_sec_eff, anchor_merge_offset_sec=0.0):
 
-    delta_geom_sec       = float(geom_delay_sec_eff)
+    delta_geom_sec = float(geom_delay_sec_eff)
 
-    # Target event time for this detector: anchor event time + geometric delay
-    t_target     = (float(anchor_idx_center) / float(fs)) + delta_geom_sec
-    idx_target_f = t_target * float(fs)           # float sample index (exact)
-    idx_target   = int(round(idx_target_f))       # integer index (for windows/diagnostics only)
+    # Detector event/window center.
+    target_center_sec = float(anchor_event_sec) + delta_geom_sec
+    idx_target_center_f = target_center_sec * float(fs)
+    idx_target_center = int(round(idx_target_center_f))
 
-    # Deterministic UMH merge location on the LIGO timeline:
-    # UMH template t=0 placed at start_idx; merge happens at t_merge_obs
-    idx_merge_f = float(start_idx) + float(t_merge_obs) * float(fs)   # NO rounding
+    # Generator merge location should preserve the anchor's center->merge offset.
+    target_merge_sec = target_center_sec + float(anchor_merge_offset_sec)
+    idx_target_merge_f = target_merge_sec * float(fs)
+    idx_target_merge = int(round(idx_target_merge_f))
 
-    # Exact fractional delay needed so UMH merge lands on geometry target (no rounding)
-    tau = (idx_target_f - idx_merge_f) / float(fs)
-    # Diagnostic: nearest-sample lag equivalent (do not use for shifting)
-    peak_lag = int(round(idx_target_f - idx_merge_f))
+    # Current generator merge location on the detector timeline.
+    idx_merge_f = float(start_idx) + float(t_merge_obs) * float(fs)
+
+    # Shift UMH so generator merge lands at target_merge.
+    tau = (idx_target_merge_f - idx_merge_f) / float(fs)
+    peak_lag = int(round(idx_target_merge_f - idx_merge_f))
 
     # Apply the fractional delay to both whitened and conditioned UMH
     if abs(tau) > 1e-15:
@@ -419,23 +734,82 @@ def align_umh_to_global(config, detector, fs, N_ligo, start_idx, t_merge_obs, um
         umh_cond_full = fractional_delay_fft(umh_cond_full, fs, tau)
 
     # For plotting/diagnostics only:
-    idx_merge_loc = int(round(idx_merge_f + tau * fs))
-    idx_merge_loc = int(np.clip(idx_merge_loc, 0, len(umh_w_full) - 1))
+    idx_merge_loc = int(np.clip(idx_target_merge, 0, len(umh_w_full) - 1))
 
     # Window placement: shift windows by the *actual* integer target relative to anchor center
-    shift_samples = int(idx_target - int(anchor_idx_center))
+    shift_samples = int(idx_target_center - int(anchor_idx_center))
+    i0         = int(anchor_i0)         + shift_samples
+    i1         = int(anchor_i1)         + shift_samples
     i0_snr     = int(anchor_i0_snr)     + shift_samples
     i1_snr     = int(anchor_i1_snr)     + shift_samples
     idx_center = int(anchor_idx_center) + shift_samples
 
+    i0 = int(np.clip(i0, 0, N_ligo)); i1 = int(np.clip(i1, 0, N_ligo))
+    i0_snr = int(np.clip(i0_snr, 0, N_ligo)); i1_snr = int(np.clip(i1_snr, 0, N_ligo))
+    if i1 <= i0: raise RuntimeError(f"[{detector}] locked fit window collapsed after geometry shift.")
+    if i1_snr <= i0_snr: raise RuntimeError(f"[{detector}] locked SNR window collapsed after geometry shift.")
+
     # Purely diagnostic: measure residual lag near target (should be ~0 if everything is consistent)
     search_half_sec   = float(config.get("FIT_SEARCH_HALF_SEC", 0.2))
     search_half       = int(search_half_sec * fs)
-    _, idx_center_sub = Sub_Align(N_ligo, umh_w_full, idx_target, search_half)
-    lag_meas_sec      = (idx_center_sub - idx_target) / fs
+    _, idx_center_sub = Sub_Align(N_ligo, umh_w_full, idx_target_center, search_half)
+    lag_meas_sec      = (idx_center_sub - idx_target_center) / fs
 
-    return umh_w_full, umh_cond_full, peak_lag, i0_snr, i1_snr, idx_center, idx_merge_loc, tau, shift_samples, delta_geom_sec, lag_meas_sec
+    return umh_w_full, umh_cond_full, peak_lag, i0, i1, i0_snr, i1_snr, idx_center, idx_merge_loc, tau, shift_samples, delta_geom_sec, lag_meas_sec
 # ------------ Fractional-delay and Coarse Alignment utilities ------------
+
+
+# ------------ Recondition after anchor is selected ------------
+def recondition_detector_locked(config, detector, fs, ligo_strain, umh_resamp, target_center_sec, target_merge_sec, t_merge_obs, band_lo, band_hi, notch_lines,
+                                dtype=np.float64, network_polarity_flip_applied=False, psd_event_sec=None):
+    """
+    Locked detector reconditioning.
+    Rebuilds:
+      - LIGO conditioned + whitened strain using locked event time for PSD exclusion
+      - UMH full timeline placed at target_event_sec - t_merge_obs
+      - UMH conditioned + whitened using the same PSD
+    Returns a dict with rebuilt arrays and placement metadata.
+    """
+    target_center_sec = float(target_center_sec); target_merge_sec  = float(target_merge_sec)
+    if psd_event_sec is None: psd_event_sec = target_center_sec
+    psd_event_sec = float(psd_event_sec)
+    locked_start_idx_f = target_merge_sec * float(fs) - float(t_merge_obs) * float(fs)
+    locked_start_idx = int(round(locked_start_idx_f))
+
+    # Rebuild LIGO conditioning/PSD from the locked event time.
+    ligo_w_full, ligo_cond_full, f_psd, Pxx, t_event_sec = Condition_Wave(config, detector, fs, ligo_strain, band_lo, band_hi, notch_lines,
+                                                                          f_psd=None, Pxx=None, dtype=dtype, debug="LIGO",
+                                                                          locked_event_sec=psd_event_sec if \
+                                                                          bool(config.get("PSD_USE_LOCKED_EVENT_TIME", True)) else None)
+    # Place UMH directly onto the LIGO timeline using locked start.
+    umh_full = build_umh_full_locked(ligo_strain, umh_resamp, locked_start_idx, dtype=dtype)
+     # Preserve fractional locked_start_idx_f, otherwise you can still lose sub-sample alignment.
+    frac_start_sec = (locked_start_idx_f - locked_start_idx) / float(fs)
+    if abs(frac_start_sec) > 1e-15: umh_full = fractional_delay_fft(umh_full, fs, frac_start_sec)
+    if network_polarity_flip_applied: umh_full *= -1.0
+
+    # Whiten UMH using the LIGO PSD from this same locked event context.
+    umh_w_full, umh_cond_full, _, _, _ = Condition_Wave(config, detector, fs, umh_full, band_lo, band_hi, notch_lines, f_psd=f_psd, Pxx=Pxx, 
+                                                        dtype=dtype, debug="UMH", locked_event_sec=psd_event_sec if \
+                                                        bool(config.get("PSD_USE_LOCKED_EVENT_TIME", True)) else None)
+    idx_center = int(round(target_center_sec * float(fs))); idx_merge_loc = int(round(target_merge_sec * float(fs)))
+    return {"ligo_w_full": ligo_w_full, "ligo_cond_full": ligo_cond_full, "umh_full": umh_full, "umh_w_full": umh_w_full, "umh_cond_full": umh_cond_full,
+            "f_psd": f_psd, "Pxx": Pxx, "t_event_sec": t_event_sec, "psd_event_sec": psd_event_sec, "target_center_sec": target_center_sec, 
+            "target_merge_sec": target_merge_sec, "locked_start_idx": locked_start_idx, "locked_start_idx_f": locked_start_idx_f, 
+            "idx_center": idx_center, "idx_merge_loc": idx_merge_loc, "tau": 0.0}
+
+
+# ------------ Build full locked on anchor timeline utilities ------------
+def build_umh_full_locked(ligo_like, umh_resamp, start_idx, dtype=np.float64):
+    """
+    Build a full-length UMH vector on the LIGO timeline. Handles negative or edge-clipped start indices safely.
+    """
+    start_idx = int(round(start_idx))
+    umh_full = np.zeros_like(ligo_like, dtype=dtype)
+    dst0 = max(0, start_idx); src0 = max(0, -start_idx)
+    n_dst = len(umh_full) - dst0; n_src = len(umh_resamp) - src0; n = min(n_dst, n_src)
+    if n > 0: umh_full[dst0:dst0+n] = umh_resamp[src0:src0+n]
+    return umh_full
 
 
 # ------------ Not used in Physics Strict Mode: Optional: tiny time-stretch search (+/-2%) ------------
@@ -455,8 +829,7 @@ def time_stretch_about_anchor(x, s, anchor_idx, dtype=np.float64):
 
 def best_stretch_by_corr(target, template, fs, s_min=0.95, s_max=1.05, n_steps=41, dtype=np.float64):
     """
-    Search over stretch factors s in [s_min, s_max], warping `template` in time
-    while keeping length = len(target). Returns (best_s, warped_template, best_corr).
+    Search over stretch factors s in [s_min, s_max], warping `template` in time while keeping length = len(target). Returns (best_s, warped_template, best_corr).
     Correlation is cosine similarity (zero-mean, unit-norm) to avoid amplitude bias.
     """
     target   = np.asarray(target, dtype=dtype)
@@ -659,7 +1032,6 @@ def whiten_with_psd(x, fs, f_psd, Pxx, dtype=np.float64):
     # PSD is power/Hz; rfft bins correspond to Δf = fs/N; amplitude scale needs √(PSD * fs/2)
     denom = np.sqrt(P_i * fs / 2.0)
     Xw = X / denom
-
     xw = np.fft.irfft(Xw, n=N)
 
     # Final clean-up
@@ -711,7 +1083,6 @@ def make_ligo_psd_noise(N: int, dt: float, target_rms: float = 1.0, rng: np.rand
 
     noise = np.fft.irfft(coeffs, n=N)
 
-    #rms = float(np.sqrt(np.mean(noise**2)))
     rms = float(stable_rms(noise))
     if not np.isfinite(rms) or rms < EPS_FLOOR or target_rms <= 0.0: noise[:] = 0.0
     else: noise *= (target_rms / rms)
@@ -757,13 +1128,10 @@ def condition_time_domain(x, fs, f_lo, f_hi, notch_lines=(), dtype=np.float64):
       - zero-phase bandpass [f_lo, f_hi]
       - apply the same narrow notches as used for LIGO data
       - zero-mean again
-
-    This keeps signals in (approximately) physical strain units,
-    with identical filtering for UMH and LIGO.
+    This keeps signals in (approximately) physical strain units, with identical filtering for UMH and LIGO.
     """
     x = np.asarray(x, dtype); x = x - np.mean(x)
     # small taper reduces filtfilt edge transients
-    #x = x * tukey(len(x), alpha=0.05)
     x = bandpass(x, fs, f_lo=f_lo, f_hi=f_hi, order=4)
     if notch_lines: x = apply_notches(x, fs, lines=notch_lines, Q=30)
     x = x - np.mean(x)
@@ -776,7 +1144,7 @@ def estimate_event_time_seconds_hilbert(x, fs, t_bounds=(10.0, 22.0), debug_tag=
     Event-time via Hilbert magnitude |analytic(x)| within [t_min, t_max].
     More selective than moving-RMS for loud, short bursts.
     """
-    x = np.asarray(x, dtype) #dtype?
+    x = np.asarray(x, dtype)
     N = len(x)
     if N < 8: return (N/2)/float(fs), int(N/2)
 
@@ -802,6 +1170,16 @@ def estimate_event_time_seconds_hilbert(x, fs, t_bounds=(10.0, 22.0), debug_tag=
 
 
 def matched_filter_snr_window(config, detector, fs, N_ligo, ligo_w_full, umh_w_full, idx_center, tau, i0, i1, dtype=np.float64):
+    """
+    Fixed-window noise-weighted inner-product diagnostic.
+    Both observed and UMH strain have already been conditioned and whitened with the same detector-specific PSD.
+    PHYSICS_STRICT analysis does NOT perform a matched-filter search:
+      - no waveform-family maximization,
+      - no phase maximization,
+      - no amplitude fitting,
+      - no detector-specific lag maximization.
+    ALLOW_LAG_MAX=False for the published analysis, so the effective comparison lag is fixed at zero after global network registration.
+    """
     i0_snr = i0; i1_snr = i1
 
     if(False):
@@ -871,8 +1249,8 @@ def matched_filter_snr_window(config, detector, fs, N_ligo, ligo_w_full, umh_w_f
     if(bool(config.get("ALLOW_LAG_MAX", False))): lag_samp_eff = lag_samp
     else: lag_samp_eff = 0 #-int(round(tau * fs))
 
-    # ----- (A) TRUE SNR at the peak lag -----
-    # Align template at lag for a single-point inner product SNR
+    # ----- (A) Fixed-window SNR diagnostic -----
+    # lag_samp is measured for diagnostics; under ALLOW_LAG_MAX=False, lag_samp_eff=0 and no detector-specific lag maximization is applied.
     if lag_samp_eff > 0: U_al = np.r_[np.zeros(lag_samp_eff), U[:-lag_samp_eff]]
     elif lag_samp_eff < 0: k2 = -lag_samp_eff; U_al = np.r_[U[k2:], np.zeros(k2)]
     else: U_al = U
@@ -910,7 +1288,6 @@ def chirp_mass_from_track(t, f, mask, f_min=30.0, f_max=90.0, trim_lo=10.0, trim
                           nbin=16, minbinpts=6, minbins=6):
     """
     Robust single-track chirp-mass proxy from an IF track.
-
     Uses the standard inspiral scaling:
         df/dt = K * Mc^(5/3) * f^(11/3)
     =>  Mc_tilde ∝ median( (df/dt) / f^(11/3) )^(3/5)
@@ -1165,12 +1542,7 @@ def chirp_diagnostics(config, detector, fs, f_min, f_merge, f_ref, ligo_seg, umh
     df_min_points = int(config.get("df_min_points", 256))
 
     # (amp_factor, time_factor) pairs: start tight, then progressively relax
-    relax_plan = [
-        (1.00, 1.0),
-        (0.85, 1.5),
-        (0.70, 2.0),
-        (0.60, 2.5),
-    ]
+    relax_plan = [(1.00, 1.0), (0.85, 1.5), (0.70, 2.0), (0.60, 2.5)]
 
     mask = None
     for amp_factor, time_factor in relax_plan:
@@ -1242,9 +1614,7 @@ def chirp_diagnostics(config, detector, fs, f_min, f_merge, f_ref, ligo_seg, umh
             s_hi    = float(config.get("RIDGE_SMOOTH_HI",   0.0))   # no smoothing for loud events
             # Adaptive ridge smoothing based on SNR
             def apply_ridge_denoise(x, strength=0.2):
-                """
-                Very light smoothing to reduce vertical noise streaks. Preserves chirp shape.
-                """
+                # Very light smoothing to reduce vertical noise streaks. Preserves chirp shape.
                 smoothed = gaussian_filter1d(x, sigma=1.0)
                 return (1-strength)*x + strength*smoothed
             if rho_abs < rho_lo: ligo_seg_ridge = apply_ridge_denoise(ligo_seg, strength=s_lo)
@@ -1302,8 +1672,8 @@ def chirp_diagnostics(config, detector, fs, f_min, f_merge, f_ref, ligo_seg, umh
     den_ls = np.vdot(U, U).real if np.vdot(U, U).real > 0 else 1.0
     k_ls   = float(np.vdot(L, U).real / den_ls)
     resid  = L - k_ls * U
-    rms_L  = float(stable_rms(L)) #float(np.sqrt(np.mean(L**2)))
-    rms_resid = float(stable_rms(resid)) #float(np.sqrt(np.mean(resid**2)))
+    rms_L  = float(stable_rms(L))
+    rms_resid = float(stable_rms(resid))
 
     corr_window_signed = float(np.corrcoef(ligo_w_full[i0:i1], umh_w_full[i0:i1])[0, 1])
     corr_window = abs(corr_window_signed)
@@ -1405,8 +1775,12 @@ def chirp_diagnostics(config, detector, fs, f_min, f_merge, f_ref, ligo_seg, umh
              "rms_U_off_cond": None, "rms_R_on_cond": None, "rms_R_off_cond": None, "est_sig_rms_from_LIGO": None, "amp_ratio_umh_to_estsig": None,
              "rms_L_on_w": None, "rms_U_on_w": None, "rms_L_off_w": None, "rms_R_on_w": None, "rms_R_off_w": None, "resid_whitened_inflation": None,           
              "alpha_star": None, "alpha_star_num_sh": None, "alpha_star_den_hh": None,
-             "alpha_star_off": None, "alpha_star_off_num_sh": None, "alpha_star_off_den_hh": None, 
-             "amplitude_note": None}
+             "alpha_star_off": None, "alpha_star_off_num_sh": None, "alpha_star_off_den_hh": None, "amplitude_note": None, "rms_U_off_w": None,
+             "excess_L_rms_cond": None, "excess_U_rms_cond": None, "excess_R_rms_cond": None, "umh_to_ligo_excess_rms_cond": None,
+             "excess_L_rms_w": None, "excess_U_rms_w": None, "excess_R_rms_w": None, "umh_to_ligo_excess_rms_w": None,
+             "env_pctl": None, "env_L_on_cond": None, "env_L_off_cond": None, "env_U_on_cond": None, "env_U_off_cond": None,
+             "excess_L_env_cond": None, "excess_U_env_cond": None, "umh_to_ligo_excess_env_cond": None, "resid_gain_unscaled_w": None, 
+             "resid_gain_alpha_w": None, "resid_excess_gain_w": None, "amp_excess_measurable": None, "amp_excess_note": None}
     d_ds  = {"distance_ratio_mean": None, "distance_ratio_std": None, "distance_note": "n/a"}
     d_pl  = {"pol_norm_diff": None, "pol_note": "n/a"}
     d_rd  = {"meas_delay_sec": None, "meas_delay_geom_sec": None, "pred_delay_sec": None, "lag_residual_sec": None, "lag_residual_geom_sec": None,
@@ -1835,6 +2209,23 @@ def chirp_diagnostics(config, detector, fs, f_min, f_merge, f_ref, ligo_seg, umh
                 num = float(np.sum(sw[m] * hw[m])); den = float(np.sum(hw[m] * hw[m]))
                 if den < EPS_FLOOR: return np.nan, num, den
                 return num / den, num, den
+            def _finite_or_none(x):
+                try: x = float(x); return x if np.isfinite(x) else None
+                except Exception: return None
+            def _excess_rms_from_rms(rms_on, rms_off): rms_on = float(rms_on); rms_off = float(rms_off); return float(np.sqrt(max(0.0, rms_on*rms_on - rms_off*rms_off)))
+            def _excess_power_from_rms(rms_on, rms_off): rms_on = float(rms_on); rms_off = float(rms_off); return float(max(0.0, rms_on*rms_on - rms_off*rms_off))
+            def _env_pctl(x, pctl=95.0):
+                x = np.asarray(x, dtype=float)
+                if x.size < 8: return 0.0
+                env = np.abs(hilbert(x)); env = env[np.isfinite(env)]
+                if env.size == 0: return 0.0
+                return float(np.percentile(env, float(np.clip(pctl, 50.0, 100.0))))
+            def _resid_gain_power(data, model, alpha=1.0):
+                data = np.asarray(data, dtype=float); model = np.asarray(model, dtype=float)
+                n = min(data.size, model.size)
+                if n < 8: return None
+                data = data[:n]; model = model[:n]; p0 = float(np.mean(data * data)); r = data - float(alpha) * model; p1 = float(np.mean(r * r))
+                return _finite_or_none((p0 - p1) / (p0 + EPS_FLOOR))
 
             N_ligo = len(ligo_w_full)
             # Use the same window for scoring (SNR window)
@@ -1856,6 +2247,13 @@ def chirp_diagnostics(config, detector, fs, f_min, f_merge, f_ref, ligo_seg, umh
             rms_L_on = _rms(L_on); rms_U_on  = _rms(U_on); rms_L_off = _rms(L_off); rms_U_off = _rms(U_off)
             rms_R_on = _rms(R_on); rms_R_off = _rms(R_off)
 
+            # --- Noise-subtracted excess RMS, conditioned domain ---
+            excess_L_cond = _excess_rms_from_rms(rms_L_on, rms_L_off)
+            excess_U_cond = _excess_rms_from_rms(rms_U_on, rms_U_off)
+            excess_R_cond = _excess_rms_from_rms(rms_R_on, rms_R_off)
+            if excess_L_cond > EPS_FLOOR: umh_to_ligo_excess_rms_cond = excess_U_cond / (excess_L_cond + EPS_FLOOR)
+            else: umh_to_ligo_excess_rms_cond = None
+
             # Estimate LIGO "signal RMS" by variance subtraction (no scaling of UMH)
             est_sig_rms = float(np.sqrt(max(0.0, (rms_L_on*rms_L_on) - (rms_L_off*rms_L_off))))
             if est_sig_rms < EPS_FLOOR:
@@ -1866,23 +2264,44 @@ def chirp_diagnostics(config, detector, fs, f_min, f_merge, f_ref, ligo_seg, umh
             # Compare UMH in-band RMS to the estimated signal RMS
             amp_ratio_umh_to_estsig = rms_U_on / (est_sig_rms + EPS_FLOOR)
             # Whitened-domain residual sanity: residual on-source should look like noise
-            Lw_on = ligo_w_full[on_i0:on_i1]; Uw_on = umh_w_full[on_i0:on_i1]; Lw_off = ligo_w_full[off_i0:off_i1]
-            Rw_on = resid_w[on_i0:on_i1];    Rw_off = resid_w[off_i0:off_i1]
-            rms_Lw_on = _rms(Lw_on); rms_Uw_on = _rms(Uw_on); rms_Lw_off = _rms(Lw_off)
-            rms_Rw_on = _rms(Rw_on); rms_Rw_off = _rms(Rw_off)
+            Lw_on = ligo_w_full[on_i0:on_i1]; Uw_on = umh_w_full[on_i0:on_i1]; Lw_off = ligo_w_full[off_i0:off_i1]; Uw_off = umh_w_full[off_i0:off_i1];
+            Rw_on = resid_w[on_i0:on_i1];     Rw_off = resid_w[off_i0:off_i1]
+            rms_Lw_on  = _rms(Lw_on); rms_Uw_on  = _rms(Uw_on); rms_Lw_off = _rms(Lw_off); rms_Uw_off = _rms(Uw_off)
+            rms_Rw_on  = _rms(Rw_on); rms_Rw_off = _rms(Rw_off)
+
+            # --- Noise-subtracted excess RMS, whitened domain ---
+            excess_L_w = _excess_rms_from_rms(rms_Lw_on, rms_Lw_off)
+            excess_U_w = _excess_rms_from_rms(rms_Uw_on, rms_Uw_off)
+            excess_R_w = _excess_rms_from_rms(rms_Rw_on, rms_Rw_off)
+            if excess_L_w > EPS_FLOOR: umh_to_ligo_excess_rms_w = excess_U_w / (excess_L_w + EPS_FLOOR)
+            else: umh_to_ligo_excess_rms_w = None
+            # --- Excess-power residual gain --- Positive means the UMH subtraction reduced on-source excess power.
+            L_excess_power_w = _excess_power_from_rms(rms_Lw_on, rms_Lw_off)
+            R_excess_power_w = _excess_power_from_rms(rms_Rw_on, rms_Rw_off)
+            if L_excess_power_w > EPS_FLOOR: resid_excess_gain_w = (L_excess_power_w - R_excess_power_w) / (L_excess_power_w + EPS_FLOOR)
+            else: resid_excess_gain_w = None
+            # --- Direct residual gain, diagnostic only ---
+            resid_gain_unscaled_w = _resid_gain_power(Lw_on, Uw_on, alpha=1.0)
+            # alpha_star is diagnostic-only; do not use it as applied scaling but it tells whether amplitude alone could rescue a detector.
+            resid_gain_alpha_w = None
+
             # Residual inflation factor (whitened): ~1 means residual consistent with noise
             resid_whitened_inflation = rms_Rw_on / (rms_Rw_off + EPS_FLOOR)
             # ---- alpha* diagnostic (report-only) ----
             on_mask = np.zeros(len(ligo_w_full), dtype=bool); on_mask[i0:i1] = True
             alpha_star, num_sh, den_hh = alpha_star_diag(s_w=ligo_w_full, h_w=umh_w_full, mask=on_mask)
-            # Build an "off" window mask (example: a chunk well before the event)
-            NOISE_GAP_SEC = float(config.get("NOISE_GAP_SEC", 0.35)); gap = int(round(NOISE_GAP_SEC * fs))
-            win_len = int(i1 - i0); off_i1 = int(i0 - gap); off_i0 = int(off_i1 - win_len)
-            if off_i0 < 0 or (off_i1 - off_i0) < win_len: off_i0 = int(i1 + gap); off_i1 = int(off_i0 + win_len)
-            off_i0 = max(0, min(off_i0, N_ligo - 2)); off_i1 = max(off_i0 + 1, min(off_i1, N_ligo))
+            if alpha_star is not None and np.isfinite(alpha_star): resid_gain_alpha_w = _resid_gain_power(Lw_on, Uw_on, alpha=alpha_star)
             off_mask = np.zeros(len(ligo_w_full), dtype=bool); off_mask[off_i0:off_i1] = True
 
             alpha_star_off, num_off, den_off = alpha_star_diag(s_w=ligo_w_full, h_w=umh_w_full, mask=off_mask)
+
+            amp_env_pctl = float(config.get("AMP_ENV_PCTL", 95.0))
+            env_L_on  = _env_pctl(L_on,  amp_env_pctl); env_L_off = _env_pctl(L_off, amp_env_pctl)
+            env_U_on  = _env_pctl(U_on,  amp_env_pctl); env_U_off = _env_pctl(U_off, amp_env_pctl)
+            excess_L_env = _excess_rms_from_rms(env_L_on, env_L_off)
+            excess_U_env = _excess_rms_from_rms(env_U_on, env_U_off)
+            if excess_L_env > EPS_FLOOR: umh_to_ligo_excess_env_cond = excess_U_env / (excess_L_env + EPS_FLOOR)
+            else: umh_to_ligo_excess_env_cond = None
 
             d_amp["on_i0"] = i0; d_amp["on_i1"] = i1; d_amp["off_i0"] = off_i0; d_amp["off_i1"] = off_i1;
             d_amp["rms_L_on_cond"]  = rms_L_on; d_amp["rms_L_off_cond"] = rms_L_off; d_amp["rms_U_on_cond"] = rms_U_on
@@ -1899,11 +2318,37 @@ def chirp_diagnostics(config, detector, fs, f_min, f_merge, f_ref, ligo_seg, umh
             d_amp["amplitude_note"] = f"AMP_DIAG cond: rms_L(on)={rms_L_on:.3e} rms_L(off)={rms_L_off:.3e} " \
                     f"est_sig_rms={est_sig_rms:.3e} rms_U(on)={rms_U_on:.3e} ratio(U/estSig)={amp_ratio_umh_to_estsig:.3f}" \
                     f"AMP_DIAG whitened: rms_R(on)={rms_Rw_on:.3f} rms_R(off)={rms_Rw_off:.3f} inflation={resid_whitened_inflation:.3f}{d_amp_en}"
+
+            d_amp["rms_U_off_w"] = rms_Uw_off
+            d_amp["excess_L_rms_cond"] = excess_L_cond; d_amp["excess_U_rms_cond"] = excess_U_cond; d_amp["excess_R_rms_cond"] = excess_R_cond
+            d_amp["umh_to_ligo_excess_rms_cond"] = _finite_or_none(umh_to_ligo_excess_rms_cond)
+            d_amp["excess_L_rms_w"] = excess_L_w; d_amp["excess_U_rms_w"] = excess_U_w; d_amp["excess_R_rms_w"] = excess_R_w
+            d_amp["umh_to_ligo_excess_rms_w"] = _finite_or_none(umh_to_ligo_excess_rms_w)
+            d_amp["env_pctl"] = amp_env_pctl; d_amp["env_L_on_cond"] = env_L_on; d_amp["env_L_off_cond"] = env_L_off
+            d_amp["env_U_on_cond"] = env_U_on; d_amp["env_U_off_cond"] = env_U_off
+            d_amp["excess_L_env_cond"] = excess_L_env; d_amp["excess_U_env_cond"] = excess_U_env
+            d_amp["umh_to_ligo_excess_env_cond"] = _finite_or_none(umh_to_ligo_excess_env_cond)
+            d_amp["resid_gain_unscaled_w"] = _finite_or_none(resid_gain_unscaled_w)
+            d_amp["resid_gain_alpha_w"] = _finite_or_none(resid_gain_alpha_w)
+            d_amp["resid_excess_gain_w"] = _finite_or_none(resid_excess_gain_w)
+            amp_excess_measurable = (excess_L_w > float(config.get("AMP_EXCESS_MIN_W", 0.03)) and rms_Lw_off > EPS_FLOOR and
+                                    (excess_L_w / (rms_Lw_off + EPS_FLOOR)) > float(config.get("AMP_EXCESS_SNR_MIN", 0.15)))
+            d_amp["amp_excess_measurable"] = bool(amp_excess_measurable)
+            if not amp_excess_measurable: d_amp["amp_excess_note"] = "On-source excess is weak relative to off-source noise; amplitude ratio is low-confidence."
+            elif resid_excess_gain_w is not None and resid_excess_gain_w > 0.0: d_amp["amp_excess_note"] = "UMH reduces noise-subtracted on-source excess power."
+            else: d_amp["amp_excess_note"] = "UMH does not reduce noise-subtracted on-source excess power."
+
             # Print a compact, interpretable summary
             print(f"[{detector}] AMP_DIAG cond: rms_L(on)={rms_L_on:.3e} rms_L(off)={rms_L_off:.3e} "
                     f"est_sig_rms={est_sig_rms:.3e} rms_U(on)={rms_U_on:.3e} ratio(U/estSig)={amp_ratio_umh_to_estsig:.3f}")
             print(f"[{detector}] AMP_DIAG whitened: rms_R(on)={rms_Rw_on:.3f} rms_R(off)={rms_Rw_off:.3f} "
                     f"inflation={resid_whitened_inflation:.3f}")
+            print(f"[{detector}] AMP_EXCESS cond: excess_L={excess_L_cond:.3e} excess_U={excess_U_cond:.3e} "
+                  f"U/L={umh_to_ligo_excess_rms_cond if umh_to_ligo_excess_rms_cond is not None else np.nan:.3f}")
+
+            print(f"[{detector}] AMP_EXCESS white: excess_L={excess_L_w:.3f} excess_U={excess_U_w:.3f} "
+                  f"U/L={umh_to_ligo_excess_rms_w if umh_to_ligo_excess_rms_w is not None else np.nan:.3f} "
+                  f"resid_excess_gain={resid_excess_gain_w if resid_excess_gain_w is not None else np.nan:.3f}")
     except Exception as e: d_amp["amplitude_note"] = "Exception in Amplitude diagnostic: {e}."; print(f"[WARN] Failed to store amp_noise_diag: {e}")
 
     # ---------------------------------------------------------
@@ -1947,8 +2392,7 @@ def chirp_diagnostics(config, detector, fs, f_min, f_merge, f_ref, ligo_seg, umh
     try:
         if (t_peak_geom_abs is None) or (not np.isfinite(t_peak_geom_abs)) or (t_peak_abs is None) or (anchor_t_peak_abs is None):
             d_rd["meas_delay_sec"] = None; d_rd["pred_delay_sec"] = None; d_rd["lag_residual_sec"] = None;
-            d_rd["meas_delay_geom_sec"] = None; d_rd["lag_residual_geom_sec"] = None; 
-            #d_rd["lag_note"] = "Missing t_peak_geom_abs, t_peak_abs or anchor_t_peak_abs"
+            d_rd["meas_delay_geom_sec"] = None; d_rd["lag_residual_geom_sec"] = None
         else:
             d_rd["meas_delay_sec"] = meas_delay = float(t_peak_abs) - float(anchor_t_peak_abs)
             d_rd["meas_delay_geom_sec"] = meas_delay_geom = float(t_peak_geom_abs) - float(anchor_t_peak_abs)
@@ -1956,14 +2400,8 @@ def chirp_diagnostics(config, detector, fs, f_min, f_merge, f_ref, ligo_seg, umh
             # Predicted delay from geometry (relative to the same anchor)
             if (geom_delay_sec_eff is None): d_rd["pred_delay_sec"] = pred_delay = None
             else: d_rd["pred_delay_sec"] = pred_delay = float(geom_delay_sec_eff)
-            if pred_delay is None: 
-                d_rd["lag_residual_sec"] = None; d_rd["align_gate_failed"] = None; d_rd["umh_vs_ligo_peak_align_sec"] = None; 
-                #d_rd["lag_note"] = "Missing geom_delay_sec_eff"
-            else:
-                d_rd["lag_residual_sec"] = meas_delay - pred_delay; d_rd["lag_residual_geom_sec"] = meas_delay_geom - pred_delay
-                #lag_tol_sec = float(config.get("UMH_LAG_TOL_SEC", 2e-4))  # ~0.2 ms
-                #if abs(d_rd["lag_residual_sec"]) < lag_tol_sec: d_rd["lag_note"] = "Inter-site timing consistent with geometry (RA/DEC OK)"
-                #else: d_rd["lag_note"] = "Inter-site timing inconsistent with geometry (RA/DEC / peak-pick issue)"
+            if pred_delay is None: d_rd["lag_residual_sec"] = None; d_rd["align_gate_failed"] = None; d_rd["umh_vs_ligo_peak_align_sec"] = None
+            else: d_rd["lag_residual_sec"] = meas_delay - pred_delay; d_rd["lag_residual_geom_sec"] = meas_delay_geom - pred_delay
                 
         # lag_meas_sec is the measured UMH↔LIGO peak lag for THIS detector (post-alignment).
         if lag_meas_sec is None: lag_meas_sec = float(lag_samp) / float(fs); d_rd["align_gate_failed"] = False
@@ -2144,7 +2582,6 @@ def build_spectrogram(y_win, fs_base, fs_spec, i0, NPER, NOVER, p_lo, p_hi, dtyp
     # --- Core region for color scaling AND plotting ---
     if S_db.shape[1] > 6: S_db_core = S_db[:, 3:-3]; t_abs_core = t_abs[3:-3]
     else: S_db_core = S_db; t_abs_core = t_abs
-    #S_db_core = S_db; t_abs_core = t_abs
 
     # Compute vmin/vmax from core region
     vmin, vmax = np.nanpercentile(S_db_core, [p_lo, p_hi])
@@ -2170,15 +2607,20 @@ def run_ligo_compiler_test(config_overrides=None):
       Apply identical bandpass+notches.
       Estimate PSD from LIGO; whiten both with same PSD.
       Coarse alignment (lag + polarity) in whitened domain.
-      Fine time-stretch search around s≈1 to maximize correlation.
-      Compute matched-filter SNR.
+      (Default-OFF) Fine time-stretch search around s≈1 to maximize correlation.
+      Compute fixed-window noise-weighted SNR diagnostic.
       Generate overlays, residuals, spectrograms, and ASD/FFT diagnostics.
     """
     config        = get_default_config()
     if config_overrides: config.update(config_overrides)
 
     #Pull ligo data retrieved through the Planck download data Script, to the base shared PlanckData directory.
-    ligo_data     = config["LIGO_DATA"]
+    
+    profile     = config.get("profile", "replica_gw150914")
+    profile_key = profile.replace("replica_", "").upper()
+    profile_key = f"LIGO_DATA_{profile_key}"
+    ligo_data   = config[profile_key]
+    print(f"profile:{profile}")
 
     PHYSICS_STRICT      = config.get("PHYSICS_STRICT",       True)
 
@@ -2189,12 +2631,12 @@ def run_ligo_compiler_test(config_overrides=None):
 
     notch_lines   = tuple(config.get("NOTCH_LINES", [60,120,180,240,331,500]))
 
-    NPER          = 4096 #1024        #4096
-    NOVER         = 2048 #768         #1024
+    NPER          = config.get("NPER",  4096)
+    NOVER         = config.get("NOVER", 2048)
 
     # --- analysis constants ---
-    NPER_PSD      = 4096        # for ASD / whitening
-    NOVER_PSD     = 2048
+    NPER_PSD = int(config.get("NPER_PSD", config.get("NPER", 4096)))
+    NOVER_PSD = int(config.get("NOVER_PSD", config.get("NOVER", 2048)))
 
     # Alignment quality thresholds
     MIN_PEAK_CORR    = 0.40   # min corr to accept fine peak alignment
@@ -2242,10 +2684,10 @@ def run_ligo_compiler_test(config_overrides=None):
     name_to_idx     = {name: i for i, name in enumerate(det_names_norm)}
 
     f_min   = float(umh.get("f_min_obs",    30.0))
-    f_merge = float(umh.get("f_merge_obs", 150.0))
+    f_merge = float(umh.get("f_merge_obs_eff", 150.0))
     lowcut  = float(umh.get("lowcut_obs",  f_min))
     highcut = float(umh.get("highcut_obs", config.get("highcut", 500.0)))
-    f_rd    = float(umh.get("f_rd_obs",    250.0))
+    f_rd    = float(umh.get("f_rd_obs_eff", 250.0))
     f_ref   = float(umh.get("f_ref_obs",   100.0))
     t_merge_obs = umh.get("t_merge_obs",   None)
 
@@ -2273,6 +2715,11 @@ def run_ligo_compiler_test(config_overrides=None):
     config["band_lo"] = band_lo; config["band_hi"] = band_hi
 
     print(f"[UMH] fs={fs_umh:.1f} Hz, f_min={f_min:.1f}, highcut={highcut:.1f}, f_rd={f_rd:.1f}, band=[{band_lo:.1f},{band_hi:.1f}]")
+
+    fxanc = config.get("FIXED_ANCHOR", None)
+    if fxanc is not None:
+        fxanc = str(fxanc).strip().lower()
+        if fxanc in ("", "none", "null"): fxanc = None
 
     global_pol = None; network_polarity_flip_applied = False
 
@@ -2324,144 +2771,6 @@ def run_ligo_compiler_test(config_overrides=None):
         umh_raw = np.array(umh[umh_key], dtype=dtype)
         N_ligo, N_umh, umh_resamp, fs = UMH_Resample(config, detector, fs_ligo, fs_umh, ligo_strain, umh_raw)
 
-        # ------------------------------
-        # Conditioning + PSD + whitening (common PSD)
-        # ------------------------------
-        def Condition_Wave(config, detector, fs, strain_full, band_lo, band_hi, notch_lines, f_psd=None, Pxx=None, dtype=dtype, debug="LIGO"):
-            cond_full = condition_time_domain(strain_full, fs, band_lo, band_hi, notch_lines, dtype=dtype)
-            cond_full = sanitize(cond_full, name=f"{detector}:{debug}:cond_full")
-            N_cf_len  = len(cond_full)
-
-            # Event time estimate within a plausible window (GW150914 in 32s LOSC is ~16.4 s)
-            # --- Event-time estimate (robust two-stage) ---
-            t_event_sec, idx_event = estimate_event_time_seconds_hilbert(cond_full, fs, t_bounds=(15.0, 22.0), debug_tag=detector, dtype=dtype)
-            # fallback to full 10–22 window if nothing above threshold
-            if t_event_sec < 15.0 or t_event_sec > 22.0: 
-                t_event_sec, idx_event = estimate_event_time_seconds_hilbert(cond_full, fs, t_bounds=(10.0, 22.0), debug_tag=detector, dtype=dtype)
-            print(f"PreCheck Alignment: [{detector}] estimated t_event ≈ {t_event_sec:.6f} s (from {debug} Hilbert envelope)")
-            # End: Event-time estimate.
-
-            # Estimate PSD Whitening based on off-source data LIGO only
-            if(f_psd is None and Pxx is None):
-                def _slice_indices(t_start, t_end, fs, N):
-                    i0 = int(round(t_start * fs))
-                    i1 = int(round(t_end   * fs))
-                    i0 = max(0, min(N, i0))
-                    i1 = max(0, min(N, i1))
-                    if i1 <= i0: return None
-                    return i0, i1
-                
-                mask = np.ones(N_cf_len, dtype=bool)
-                # Drop initial filter transient region (helps avoid startup artifacts)     
-                psd_mode = str(config.get("PSD_MODE", "window")).lower()           
-                drop_sec = float(config.get("PSD_DROP_FILTER_TRANSIENT_SEC", 1.0))
-                i_drop = int(round(drop_sec * fs))
-
-                if psd_mode == "window":
-                    guard     = float(config.get("PSD_GUARD_SEC", 2.0))
-                    pre_start = float(config.get("PSD_PRE_START_SEC", 12.0))
-                    pre_end   = float(config.get("PSD_PRE_END_SEC",   4.0))
-
-                    # Pre-event window: [t_event - pre_start, t_event - pre_end]
-                    t0_pre = t_event_sec - pre_start
-                    t1_pre = t_event_sec - pre_end
-
-                    sl_pre = _slice_indices(t0_pre, t1_pre, fs, N_cf_len)
-                    chunks = []
-
-                    if sl_pre is not None:
-                        i0, i1 = sl_pre
-                        i0 = max(i0, i_drop)
-                        if i1 > i0: chunks.append(cond_full[i0:i1])
-
-                    # Optional post-event window: [t_event + post_start, t_event + post_end]
-                    if bool(config.get("PSD_USE_POST_WINDOW", False)):
-                        post_start = float(config.get("PSD_POST_START_SEC", 4.0))
-                        post_end   = float(config.get("PSD_POST_END_SEC",   12.0))
-                        t0_post = t_event_sec + post_start
-                        t1_post = t_event_sec + post_end
-
-                        sl_post = _slice_indices(t0_post, t1_post, fs, N_cf_len)
-                        if sl_post is not None:
-                            i0, i1 = sl_post
-                            i0 = max(i0, i_drop)
-                            if i1 > i0: chunks.append(cond_full[i0:i1])
-
-                    if len(chunks) == 0:
-                        # Fallback: original mask approach if windows don't fit in the file Exclude guard band around event
-                        i0g = max(0, int(round((t_event_sec - guard) * fs)))
-                        i1g = min(N_cf_len, int(round((t_event_sec + guard) * fs)))
-                        mask[i0g:i1g] = False
-                        # Exclude initial transient
-                        mask[:i_drop] = False
-                        l_for_psd = cond_full[mask]
-                        print(f"[{detector}] PSD_MODE=window (fallback->mask), PSD samples={len(l_for_psd)}")
-                    else:
-                        l_for_psd = np.concatenate(chunks)
-                        print(f"[{detector}] PSD_MODE=window, PSD samples={len(l_for_psd)} "
-                              f"(pre={'yes' if sl_pre else 'no'}, post={'yes' if bool(config.get('PSD_USE_POST_WINDOW', False)) else 'no'})")
-                else:
-                    # psd_mode == "mask" -> keep original behavior (but add a bigger guard if desired)
-                    guard = float(config.get("PSD_GUARD_SEC", 2.0))
-                    i0g = max(0, int(round((t_event_sec - guard) * fs)))
-                    i1g = min(N_cf_len, int(round((t_event_sec + guard) * fs)))
-                    mask[i0g:i1g] = False
-                    mask[:i_drop] = False
-                    l_for_psd = cond_full[mask]
-                    print(f"[{detector}] PSD_MODE=mask, PSD samples={len(l_for_psd)}")
-
-                # Generate PSD for use in Whitening.
-                f_psd, Pxx = estimate_psd_from_ligo(l_for_psd, fs, nperseg=NPER_PSD, noverlap=NOVER_PSD, dtype=dtype)
-            # End: Estimate PSD Whitening based on off-source data LIGO only
-            
-            # ---------------------------------
-            # Optional: Very light glitch gating
-            # ---------------------------------
-            gate_glitches = bool(config.get("GATE_GLITCHES", False))
-            if gate_glitches:
-                # Hilbert envelope of the conditioned strain_full
-                env_full = np.abs(hilbert(cond_full))
-                med_env  = np.median(env_full)
-
-                # Define a high threshold so we only touch real spikes e.g. 8× the median envelope
-                k_thresh = float(config.get("GATE_ENV_FACTOR", 8.0))
-                thresh   = k_thresh * med_env
-
-                # Protect a window around the GW event so we never gate the chirp itself
-                protect_before = float(config.get("GATE_PROTECT_BEFORE_SEC", 0.25))
-                protect_after  = float(config.get("GATE_PROTECT_AFTER_SEC", 0.35))
-                t = np.arange(len(cond_full)) / fs
-                protect = (t >= (t_event_sec - protect_before)) & \
-                          (t <= (t_event_sec + protect_after))
-
-                # Candidate glitch points: envelope above threshold AND outside the chirp window
-                glitch_pts = (env_full > thresh) & (~protect)
-
-                # Build a smooth gate (Tukey-ish) around each glitch point
-                gate = np.ones_like(cond_full, dtype=float)
-                half_width = int(float(config.get("GATE_HALF_WIDTH_SEC", 0.03)) * fs)  # ~30 ms by default
-
-                idxs = np.where(glitch_pts)[0]
-                for idx in idxs:
-                    i0 = max(0, idx - half_width)
-                    i1 = min(len(gate), idx + half_width)
-                    n  = i1 - i0
-                    if n <= 3: continue
-                    # simple cosine taper from 1 → 0 → 1
-                    window = 0.5 * (1.0 - np.cos(2.0 * np.pi * np.arange(n) / (n - 1)))
-                    gate[i0:i1] = np.minimum(gate[i0:i1], 1.0 - 0.9 * window)
-
-                # Apply gate to the conditioned strain_full
-                cond_full *= gate
-            # End: Optional: Very light glitch gating
-
-
-            # Whiten the entire conditioned LIGO time series with that PSD
-            w_full = whiten_with_psd(cond_full, fs, f_psd, Pxx, dtype=dtype)
-            w_full = sanitize(w_full, name=f"{detector}:{debug}:w_full")
-
-            return w_full, cond_full, f_psd, Pxx, t_event_sec
-
 
         ligo_w_full, ligo_cond_full, f_psd, Pxx, t_event_sec = Condition_Wave(config, detector, fs, ligo_strain, 
                                    band_lo, band_hi, notch_lines, f_psd=None, Pxx=None, dtype=dtype, debug="LIGO")
@@ -2495,118 +2804,6 @@ def run_ligo_compiler_test(config_overrides=None):
         umh_w_full, umh_cond_full, _, _, _ = Condition_Wave(config, detector, fs, umh_full, band_lo, band_hi, notch_lines, 
                                                             f_psd=f_psd, Pxx=Pxx, dtype=dtype, debug="UMH")
 
-        # ------------------------------
-        # Envelope-based fine alignment near true peaks
-        # ------------------------------
-        def Fine_Align(config, detector, fs, ligo_w_full, umh_w_full, umh_cond_full, idx_merge_loc=None):
-            N = len(ligo_w_full)
-            
-            #Find Peak, using coarse peak, exclude areas around peak to stop_idx inadvertantly picking another lobe.
-            edge_exclude_crs_sec = float(config.get("FIT_EDGE_EXCLUDE_CRS_SEC", 0.5))
-            edge_exclude_crs     = int(edge_exclude_crs_sec * fs)
-            #Find Peak, secondary using fine peak detection.
-            edge_exclude_sec     = float(config.get("FIT_EDGE_EXCLUDE_SEC", 0.05))
-            edge_exclude         = int(edge_exclude_sec * fs)           
-            search_half_sec      = float(config.get("FIT_SEARCH_HALF_SEC", 0.2))
-            search_half          = int(search_half_sec * fs)
-
-            env_ligo = np.abs(hilbert(ligo_w_full))
-
-            # ------------------------------
-            # LIGO peak: data-only, but expected-time locked (preferred)
-            # ------------------------------
-            if idx_merge_loc is not None:
-                idx_expected = int(np.clip(idx_merge_loc, 0, N - 1))
-                idx_ligo_peak, idx_ligo_peak_sub = find_peak_loudest_significant(fs, env_ligo, idx_expected=idx_expected, half_width=search_half,
-                    edge_exclude=edge_exclude, smooth_ms=float(config.get("PEAK_SMOOTH_MS", 12.0)), k_mad=float(config.get("PEAK_K_MAD", 6.0)),
-                    max_offset_sec=float(config.get("PEAK_MAX_OFFSET_SEC", 0.08)), tie_radius_sec=float(config.get("PEAK_TIE_RADIUS_SEC", 0.01)))
-                idx_ligo_peak_crs = idx_expected; idx_ligo_peak = int(idx_ligo_peak); idx_ligo_peak_sub = float(idx_ligo_peak_sub)
-                print(f"[{detector}] LIGO peak locked to t_merge_obs: idx_expected={idx_expected}, idx_ligo_peak={idx_ligo_peak}, idx_ligo_peak_sub={idx_ligo_peak_sub}")
-            else:
-                # Fallback to legacy behavior if no t_merge_obs provided
-                idx_ligo_peak_crs = primary_peak(env_ligo, N, edge_exclude_crs)
-                idx_ligo_peak, idx_ligo_peak_sub = find_peak_loudest_significant(fs, env_ligo, idx_expected=idx_ligo_peak_crs, half_width=search_half,
-                    edge_exclude=edge_exclude, smooth_ms=float(config.get("PEAK_SMOOTH_MS", 12.0)), k_mad=float(config.get("PEAK_K_MAD", 6.0)),
-                    max_offset_sec=float(config.get("PEAK_MAX_OFFSET_SEC", 0.08)), tie_radius_sec=float(config.get("PEAK_TIE_RADIUS_SEC", 0.01)))
-                idx_ligo_peak = int(idx_ligo_peak); idx_ligo_peak_sub = float(idx_ligo_peak_sub)
-                print(f"[{detector}] Legacy LIGO peak: idx_ligo_peak_crs={idx_ligo_peak_crs}, idx_ligo_peak={idx_ligo_peak}, idx_ligo_peak_sub={idx_ligo_peak_sub}")
-
-            # ------------------------------
-            # UMH peak: DO NOT PICK. Anchor deterministically to t_merge_obs.
-            # (Optional tiny local refine could be allowed, but not needed.)
-            # ------------------------------
-            if idx_merge_loc is not None:
-                idx_umh_peak = int(np.clip(idx_merge_loc, 0, N - 1))
-                print(f"[{detector}] UMH peak ANCHORED to t_merge_obs: idx_umh_peak={idx_umh_peak}")
-            else:
-                # Fallback legacy UMH peak picking
-                env_umh  = np.abs(hilbert(umh_w_full))
-                j0 = max(0, idx_ligo_peak - search_half); j1 = min(N, idx_ligo_peak + search_half)
-                idx_umh_peak = j0 + int(np.argmax(env_umh[j0:j1]))
-                idx_merge_loc = idx_umh_peak
-                print(f"[{detector}] Legacy UMH peak picked: idx_umh_peak={idx_umh_peak}")
-
-            peak_lag         = idx_ligo_peak - idx_umh_peak
-            tau              = peak_lag / fs
-            umh_w_full_aa    = fractional_delay_fft(umh_w_full, fs, tau)
-            umh_cond_full_aa = fractional_delay_fft(umh_cond_full, fs, tau)
-
-            idx_merge_loc = int(round(idx_merge_loc + tau * fs))
-            idx_merge_loc = int(np.clip(idx_merge_loc, 0, len(umh_w_full_aa) - 1))
-
-            #Sub Align peak to find exact alignment from coarse peak.
-            idx_center, idx_center_sub = Sub_Align(N, umh_w_full_aa, idx_ligo_peak, search_half)
-
-            # Apply residual sub-sample shift so UMH peak sits exactly on LIGO peak
-            residual_lag_samples = idx_center_sub - idx_ligo_peak
-            tau_resid            = -residual_lag_samples / fs   # note the minus sign: shift UMH toward LIGO
-
-            #lag_meas_sec     = (idx_center_sub - idx_ligo_peak) / fs
-            lag_meas_sec_pre  = (idx_center_sub - idx_ligo_peak) / fs
-            #t_peak_ligo_abs  = float(idx_ligo_peak) / float(fs)
-            t_peak_ligo_abs   = float(idx_ligo_peak_sub) / float(fs)
-
-            if abs(tau_resid) > 1e-9:  # avoid pointless FFT work
-                umh_w_full_aa    = fractional_delay_fft(umh_w_full_aa,    fs, tau_resid)
-                umh_cond_full_aa = fractional_delay_fft(umh_cond_full_aa, fs, tau_resid)
-                idx_center       = idx_ligo_peak  # by construction, we've just aligned peaks
-                            
-                idx_merge_loc    = int(round(idx_merge_loc + tau_resid * fs))
-                idx_merge_loc    = int(np.clip(idx_merge_loc, 0, len(umh_w_full_aa) - 1))
-
-                # recompute sub-align on the corrected UMH
-                _, idx_center_sub2 = Sub_Align(N, umh_w_full_aa, idx_ligo_peak, search_half)
-                lag_meas_sec  = (idx_center_sub2 - idx_ligo_peak) / fs
-            else: idx_center  = int(round(idx_center_sub)); lag_meas_sec = lag_meas_sec_pre; idx_center_sub2 = 0
-            
-            mf_gate_samp = float(config.get("MF_ALIGN_GATE_SAMP", 0.25))  # quarter-sample default
-            dsec_int, dsec_sub, _ = meas_delay_xcorr_sec(fs, ligo_w_full, umh_w_full_aa, idx_center, halfwin_sec=0.15, maxlag_sec=0.01)
-            print(f"[{detector}] Fine_Align: lag_meas_sec:{lag_meas_sec} dsec_int:{dsec_int} dsec_sub={dsec_sub}")
-            if abs(dsec_sub) * fs >= mf_gate_samp:
-                umh_w_full_aa    = fractional_delay_fft(umh_w_full_aa,    fs, -dsec_sub)
-                umh_cond_full_aa = fractional_delay_fft(umh_cond_full_aa, fs, -dsec_sub)
-                idx_merge_loc    = int(np.clip(int(round(idx_merge_loc + (-dsec_sub * fs))), 0, N-1))
-                idx_center       = int(np.clip(int(round(idx_center    + (-dsec_sub * fs))), 0, N-1))
-                idx_center_sub2  = np.clip(idx_center_sub2 + (-dsec_sub * fs), 0, N-1)
-                dsec_int2, dsec_sub2, _ = meas_delay_xcorr_sec(fs, ligo_w_full, umh_w_full_aa, idx_center, halfwin_sec=0.15, maxlag_sec=0.01)
-                print(f"[{detector}] Fine_Align: meas_delay_xcorr_sec: dsec_int2:{dsec_int2} dsec_sub2={dsec_sub2}")
-
-            # Define fit window around idx_center (now effectively aligned with LIGO peak)
-            fit_before_sec    = float(config.get("FIT_WIN_BEFORE_SEC", 0.18))
-            fit_after_sec     = float(config.get("FIT_WIN_AFTER_SEC", 0.22))
-            win_before        = int(fit_before_sec * fs)
-            win_after         = int(fit_after_sec  * fs)
-
-            i0 = max(0, idx_center - win_before)
-            i1 = min(N, idx_center + win_after)
-            if (i1 - i0) < int(0.15 * fs):
-                half = int(0.175 * fs)
-                i0   = max(0, idx_center - half)
-                i1   = min(N, idx_center + half)
-
-            return umh_w_full_aa, umh_cond_full_aa, i0, i1, idx_ligo_peak, idx_center, \
-                    idx_merge_loc, lag_meas_sec, tau, tau_resid, t_peak_ligo_abs, dsec_int, dsec_sub
-
         idx_merge_loc_eff = idx_merge_loc if config.get("USE_MERGE_LOC_FOR_PEAK", False) else None
         umh_w_full_aa, umh_cond_full_aa, i0, i1, idx_ligo_peak, idx_center, idx_merge_loc, lag_meas_sec, tau, tau_resid, \
             t_peak_ligo_abs, dsec_int, dsec_sub = Fine_Align(config, detector, fs, ligo_w_full, umh_w_full, umh_cond_full, 
@@ -2616,39 +2813,9 @@ def run_ligo_compiler_test(config_overrides=None):
         # --- Fine time-stretch (optional, gated) - ONLY USED FOR DIAGNOSTIC PURPOSES ---
         stretch_accepted=False
         if ENABLE_FINE_STRETCH and PHYSICS_STRICT is False: # Disabled always under PHYSICS_STRICT Mode.
-            
-            def Fine_Stretch(config, detector, fs, ligo_w_full, umh_w_full_aa, umh_cond_full_aa, i0, i1, idx_center, dtype=np.float64):
-                S_MIN, S_MAX, N_STEPS = 0.98, 1.02, 21
-                IMPROVE_EPS, ABS_MIN  = 0.02, 0.15
-
-                lw_win = ligo_w_full[i0:i1].astype(dtype)
-                uw_win =  umh_w_full_aa[i0:i1].astype(dtype)
-
-                s_best, uw_warp_win, corr_best = best_stretch_by_corr(lw_win, uw_win, fs, s_min=S_MIN, s_max=S_MAX, n_steps=N_STEPS, dtype=dtype)
-                # Baseline (s=1) correlation for gating
-                corr_unity = best_stretch_by_corr(lw_win, uw_win, fs, s_min=1.0, s_max=1.0, n_steps=1, dtype=dtype)[2]
-
-                if (np.isfinite(s_best)
-                    and abs(s_best - 1.0) > 1e-6
-                    and (corr_best - corr_unity) > IMPROVE_EPS
-                    and corr_best > ABS_MIN):
-
-                    # Stretch ABOUT the current MF-peak anchor
-                    i_peak     = int(idx_center)   # envelope-locked center from step 4
-                    umh_w = time_stretch_about_anchor(umh_w_full_aa, s_best, i_peak, dtype=dtype)
-                    umh_cond = time_stretch_about_anchor(umh_cond_full_aa, s_best, i_peak, dtype=dtype)
-                    stretch_accepted = True
-
-                    print(f"PreCheck Alignment: [{detector}] fine-stretch ACCEPTED: s_best={s_best:.5f}, corr_search={corr_best:.3f}, baseline={corr_unity:.3f}")
-
-                else: print(f"PreCheck Alignment: [{detector}] fine-stretch REJECTED: s_best={s_best:.5f}, corr_search={corr_best:.3f}, baseline={corr_unity:.3f}")
-
-                return umh_w, umh_cond, stretch_accepted, corr_best, corr_unity
-
             umh_w_full_aa, umh_cond_full_aa, stretch_accepted, corr_best, corr_unity = Fine_Stretch(
                 config, detector, fs, ligo_w_full, umh_w_full_aa, umh_cond_full_aa, i0, i1, idx_center, dtype=dtype)
         # --- End Fine time-stretch (optional, gated) - ONLY USED FOR DIAGNOSTIC PURPOSES ---
-
 
         lw_win  = ligo_w_full[i0:i1].astype(dtype)
         uw_win  = umh_w_full_aa[i0:i1].astype(dtype)
@@ -2656,7 +2823,6 @@ def run_ligo_compiler_test(config_overrides=None):
         num_L = np.vdot(lw_win, lw_win).real
         num_U = np.vdot(uw_win, uw_win).real
         
-        #k_phys = np.sqrt(num_L / num_U)
         if not (np.isfinite(num_L) and np.isfinite(num_U)) or num_U <= EPS_SAFE_FLOOR: k_phys = float("nan")
         else: k_phys = float(np.sqrt(num_L / num_U))
         corr = np.vdot(lw_win, uw_win).real
@@ -2675,14 +2841,12 @@ def run_ligo_compiler_test(config_overrides=None):
                 print(f"PreCheck Alignment: [{detector}] sign_corr = {sign_corr:+.0f} (applied={detector_polarity_flip_applied})")
         else: print(f"PreCheck Alignment: [{detector}] sign_corr = {sign_corr:+.0f} (diagnostic, not applied.)")
 
-        rho_signed, rho_abs, t_peak, match_lagged, lag_samp, i0_snr, i1_snr =  matched_filter_snr_window(config, 
+        rho_signed, rho_abs, t_peak, match_lagged, lag_samp, i0_snr, i1_snr = matched_filter_snr_window(config, 
                                         detector, fs, N_ligo, ligo_w_full, umh_w_full_aa, idx_center, tau, i0, i1, dtype=dtype)
 
         # Single, final recenter pass around MF peak (clamped to envelope center)
-        t0_win    = i0_snr / fs
-        t1_win    = i1_snr / fs
-        t_center  = idx_center / fs
-        max_drift = 0.25
+        t0_win = i0_snr / fs; t1_win = i1_snr / fs; t_center = idx_center / fs
+        max_drift = float(config.get("MAX_DRIFT", 0.25))
         if abs(t_peak - t_center) > max_drift: t_peak = t_center
 
         recentered_final = False
@@ -2697,7 +2861,7 @@ def run_ligo_compiler_test(config_overrides=None):
 
         print(f"PreCheck Alignment: [{detector}] windowed rho_peak_signed={rho_signed:.3f}, |rho|={rho_abs:.3f} at t={t_peak:.6f}s")
 
-        # Per-detector overlap in PSD metric, aligned at the MF peak lag
+        # Discovery-pass overlap diagnostic at measured lag; not used as the final fixed-registration publication metric.
         L = np.asarray(ligo_w_full[i0_snr:i1_snr], dtype)
         U = np.asarray(umh_w_full_aa[i0_snr:i1_snr], dtype)
 
@@ -2726,13 +2890,13 @@ def run_ligo_compiler_test(config_overrides=None):
         uc_win = umh_cond_full[i0_snr:i1_snr].astype(float)
  
         # Do not use geom_delay_sec in Chirp Diagnostics for geom_delay_sec_eff yet until after we determine Anchor.
-        diag, resid_cond, resid_w, dt_env2_ligo, dt_env3_ligo, dt_env2_umh, dt_env3_umh = chirp_diagnostics(config, detector, fs, f_min, f_merge, f_ref, 
-                                lw_win, uw_win, ligo_w_full, umh_w_full_aa, k_phys, idx_merge_loc,
-                                rho_signed, lag_samp, i0_snr, i1_snr, geom_delay_sec_raw=geom_delay_sec_raw, geom_delay_sec_eff=0.0, t_peak_abs=t_peak_ligo_abs, 
-                                t_event_sec=t_event_sec, lag_meas_sec=lag_meas_sec, anchor_t_peak_abs=t_peak_ligo_abs, 
-                                BINARY_IOTA_DEG=BINARY_IOTA_DEG, pol_psi_deg=pol_psi_deg, F_plus=F_plus, F_cross=F_cross, sign_pred_gen=sign_pred_gen, global_pol=None, 
-                                sign_corr=sign_corr, detector_polarity_flip_applied=detector_polarity_flip_applied, lc_win=lc_win, uc_win=uc_win, 
-                                ligo_cond_full = ligo_cond_full, umh_cond_full = umh_cond_full, dtype=dtype)
+        diag, resid_cond, resid_w, dt_env2_ligo, dt_env3_ligo, dt_env2_umh, \
+            dt_env3_umh = chirp_diagnostics(config, detector, fs, f_min, f_merge, f_ref, lw_win, uw_win, ligo_w_full, umh_w_full_aa, k_phys, idx_merge_loc,
+                                            rho_signed, lag_samp, i0_snr, i1_snr, geom_delay_sec_raw=geom_delay_sec_raw, geom_delay_sec_eff=0.0, 
+                                            t_peak_abs=t_peak, t_event_sec=t_event_sec, lag_meas_sec=lag_meas_sec, anchor_t_peak_abs=t_peak, 
+                                            BINARY_IOTA_DEG=BINARY_IOTA_DEG, pol_psi_deg=pol_psi_deg, F_plus=F_plus, F_cross=F_cross, sign_pred_gen=sign_pred_gen, 
+                                            global_pol=None, sign_corr=sign_corr, detector_polarity_flip_applied=detector_polarity_flip_applied, lc_win=lc_win, 
+                                            uc_win=uc_win, ligo_cond_full = ligo_cond_full, umh_cond_full = umh_cond_full, dtype=dtype)
 
         # --- Summary record ---
         if(PHYSICS_STRICT is False): # Disabled always under PHYSICS_STRICT Mode.
@@ -2803,15 +2967,31 @@ def run_ligo_compiler_test(config_overrides=None):
         det_results[detector]["F_cross"]   =   F_cross
         det_results[detector]["sign_pred_gen"] = sign_pred_gen
 
+        #Added.
+        det_results[detector]["ligo_strain"] = ligo_strain
+        det_results[detector]["umh_resamp"] = umh_resamp
+        det_results[detector]["N_umh"] = N_umh
+        det_results[detector]["f_psd"] = f_psd
+        det_results[detector]["Pxx"] = Pxx
+        det_results[detector]["discovery_start_idx"] = start_idx
+        det_results[detector]["discovery_t_event_sec"] = t_event_sec
+        #Added.
+
         det_results[detector]["diag"] = diag    # Add Detector Diagnostics to Results.
         det_fnd.append(detector)                # Add Detector to array, to calculate anchor.
 
         print(f"================ Completed: Alignment Check: {detector} ================")
     #End: Load LIGO Wave forms and do Pre-Alignment check to find Global Anchor.
 
+    if not det_fnd: raise RuntimeError("No detectors were processed. Check LIGO_DATA profile, detector_names, input HDF5 paths, and UMH strain channel names.")
+
     # Found Global Anchor to use for all Alignment.
     def snr_for(detector): D = det_results[detector]; return abs(D["rho_signed"])
-    anchor_detector = max(det_fnd, key=snr_for)
+    if fxanc is not None:
+        matches = [d for d in det_fnd if d.lower() == fxanc]
+        if not matches: raise ValueError(f"FIXED_ANCHOR={fxanc!r} not found in processed detectors: {det_fnd}")
+        anchor_detector = matches[0]
+    else: anchor_detector = max(det_fnd, key=snr_for)
     print(); print(f"================ Alignment Anchored Globally using: {anchor_detector} ================")
     anchor = det_results[anchor_detector]
     anchor_geom_delay_sec_raw = anchor["geom_delay_sec_raw"]
@@ -2826,6 +3006,7 @@ def run_ligo_compiler_test(config_overrides=None):
     anchor_lag_samp   =      anchor["lag_samples_peak"]
     anchor_idx_center =      anchor["idx_center"]
     anchor_idx_merge_loc =   anchor["idx_merge_loc"]
+    anchor_tau =             float(anchor["tau"])
 
     anchor_dt_env2_ligo =    anchor["dt_env2_ligo"]
     anchor_dt_env3_ligo =    anchor["dt_env3_ligo"]
@@ -2838,7 +3019,7 @@ def run_ligo_compiler_test(config_overrides=None):
     anc_rho_sgn_corr =       anchor["sign_corr"]
 
     anchor_umh_w_full = anchor["umh_w_full"] = anchor["umh_w_full_aa"]       #Solidify Alignment for anchor for umh_w_full
-    anchor["umh_cond_full"] = anchor["umh_cond_full_aa"]    #Solidify Alignment for anchor for umh_cond_full
+    anchor["umh_cond_full"] = anchor["umh_cond_full_aa"]                     #Solidify Alignment for anchor for umh_cond_full
 
     #Peform Check on Global Polarity Flip.
     pol_anchor = 1.0 if anc_rho_sgn > 0.0 else -1.0
@@ -2853,19 +3034,29 @@ def run_ligo_compiler_test(config_overrides=None):
         return score_signed_sum, rho_net_abs, rho_abs
     
     # Override only if the network signed-sum is meaningfully better
-    s_keep, rho_net_keep, _ = global_polarity_audit(pol_anchor, det_fnd, det_results)
-    s_flip, rho_net_flip, _ = global_polarity_audit(-pol_anchor, det_fnd, det_results)
-    rel_margin = 0.10; abs_margin = 0.25           # 10% relative improvement, absolute improvement in signed-sum
-    delta = (s_flip - s_keep); denom = max(1e-6, abs(s_keep))
-    global_pol = (-pol_anchor) if ((delta / denom) > rel_margin and delta > abs_margin) else pol_anchor
+    use_locked_network = (bool(config.get("STRICT_NETWORK_REPROCESS", False)) or bool(config.get("REPROCESS_NONANCHORS_LOCKED", True)) or 
+                          bool(config.get("REPROCESS_ANCHOR_LOCKED", False)))
+    if use_locked_network:
+        # Do not let broad discovery-pass non-anchors vote on network polarity. The anchor defines the global sign convention.
+        global_pol = pol_anchor
+        s_keep, rho_net_keep, _ = global_polarity_audit(pol_anchor, det_fnd, det_results)
+        s_flip, rho_net_flip, _ = global_polarity_audit(-pol_anchor, det_fnd, det_results)
+        print(f"[GLOBAL_POL] locked mode: using anchor polarity only. audit_keep={s_keep:.3f}, audit_flip={s_flip:.3f}")
+    else:
+        s_keep, rho_net_keep, _ = global_polarity_audit(pol_anchor, det_fnd, det_results)
+        s_flip, rho_net_flip, _ = global_polarity_audit(-pol_anchor, det_fnd, det_results)
+        rel_margin = 0.10; abs_margin = 0.25           # 10% relative improvement, absolute improvement in signed-sum
+        delta = (s_flip - s_keep); denom = max(1e-6, abs(s_keep))
+        global_pol = (-pol_anchor) if ((delta / denom) > rel_margin and delta > abs_margin) else pol_anchor
     
     #ReAnchor geom_delay_sec from chosen anchor.
     anchor_geom_delay_sec_eff = anchor["geom_delay_sec_eff"] = anchor["diag"]["geom_delay_sec_eff"] #Will be 0.0 from prealign.
     for detector in det_fnd: det_results[detector]["geom_delay_sec_eff"] = det_results[detector]["geom_delay_sec_raw"] - anchor_geom_delay_sec_raw
 
-    print(f"Global Anchor: Index Center={anchor_idx_center / fs}[s]")
+    print(f"Global Anchor: Index Center={anchor_idx_center / anchor['fs']}[s]")
     print(f"================ Completed: Alignment Anchored Globally using: {anchor_detector} ================")
     # End: Found Global Anchor to use for all Alignment.
+
 
     # ------------------------------------------------------------
     # Check / Apply NETWORK polarity convention ONCE, globally (all dets)
@@ -2891,9 +3082,9 @@ def run_ligo_compiler_test(config_overrides=None):
         lag_meas_sec = anchor["lag_meas_sec"]; idx_ligo_peak = anchor["idx_ligo_peak"]
         anc_rho_sgn_corr_eff = anchor["sign_corr"]
                 
-        anc_rho_sgn, rho_abs, anchor_t_peak, match_lagged, anchor_lag_samp, anchor_i0_snr, anchor_i1_snr =  matched_filter_snr_window(config, 
-                                            anchor_detector, fs, N_ligo, anchor_ligo_w_full, anchor_umh_w_full, anchor_idx_center, tau, 
-                                            anchor_i0, anchor_i1, dtype=dtype)
+        anc_rho_sgn, rho_abs, anchor_t_peak, match_lagged, anchor_lag_samp, anchor_i0_snr, \
+            anchor_i1_snr =  matched_filter_snr_window(config, anchor_detector, fs, N_ligo, anchor_ligo_w_full, anchor_umh_w_full, anchor_idx_center, 
+                                                       anchor_tau, anchor_i0, anchor_i1, dtype=dtype)
         anchor["rho_signed"] = anc_rho_sgn; anchor["t_peak"] = anchor_t_peak; anchor["lag_samples_peak"] = anchor_lag_samp;
         anchor["i0_snr"] = anchor_i0_snr; anchor["i1_snr"] = anchor_i1_snr
 
@@ -2915,13 +3106,13 @@ def run_ligo_compiler_test(config_overrides=None):
         anchor["idx_center"] = anchor_idx_center; 
 
         # Unwhitened (but bandpassed/conditioned) windows for distance-invariant amplitude ratios
-        lc_win = ligo_cond_full[i0_snr:i1_snr].astype(float)
-        uc_win = umh_cond_full[i0_snr:i1_snr].astype(float)
+        lc_win = ligo_cond_full[anchor_i0_snr:anchor_i1_snr].astype(float)
+        uc_win = umh_cond_full[anchor_i0_snr:anchor_i1_snr].astype(float)
 
         diag, resid_cond, resid_w, dt_env2_ligo, dt_env3_ligo, dt_env2_umh, dt_env3_umh = chirp_diagnostics(config, anchor_detector, fs, f_min, f_merge, f_ref, 
                     lw_win, uw_win, anchor_ligo_w_full, anchor_umh_w_full, k_phys, anchor_idx_merge_loc,
                     anc_rho_sgn, anchor_lag_samp, anchor_i0_snr, anchor_i1_snr, geom_delay_sec_raw=anchor_geom_delay_sec_raw, geom_delay_sec_eff=anchor_geom_delay_sec_eff, 
-                    t_peak_abs=anchor_t_peak_ligo_abs, t_event_sec=t_event_sec, lag_meas_sec=lag_meas_sec, anchor_t_peak_abs=anchor_t_peak_ligo_abs, 
+                    t_peak_abs=anchor_t_peak, t_event_sec=t_event_sec, lag_meas_sec=lag_meas_sec, anchor_t_peak_abs=anchor_t_peak, 
                     BINARY_IOTA_DEG=BINARY_IOTA_DEG, pol_psi_deg=pol_psi_deg, F_plus=F_plus, F_cross=F_cross, sign_pred_gen=sign_pred_gen, global_pol=global_pol_eff, 
                     sign_corr=anc_rho_sgn_corr_eff, detector_polarity_flip_applied=detector_polarity_flip_applied, lc_win=lc_win, uc_win=uc_win, 
                     ligo_cond_full = ligo_cond_full, umh_cond_full = umh_cond_full, dtype=dtype)
@@ -2931,6 +3122,106 @@ def run_ligo_compiler_test(config_overrides=None):
         anchor["dt_env2_ligo"] = anchor_dt_env2_ligo = dt_env2_ligo; anchor["dt_env3_ligo"] = anchor_dt_env3_ligo = dt_env3_ligo;
         anchor["dt_env2_umh"]  = anchor_dt_env2_umh  = dt_env2_umh;  anchor["dt_env3_umh"]  = anchor_dt_env3_umh  = dt_env3_umh;
     else: global_pol_eff = global_pol; anc_rho_sgn_corr_eff = anc_rho_sgn_corr
+
+    # ------------------------------------------------------------
+    # Optional strict anchor locked reprocess.
+    # Sweep default: disabled for speed.
+    # Final validation: enabled for identical anchor/non-anchor path.
+    # ------------------------------------------------------------
+    fs_anchor = float(anchor["fs"]); N_anchor = int(anchor["N_ligo"])
+    anchor_center_sec = float(anchor_idx_center) / float(fs_anchor); anchor_merge_sec = float(anchor_idx_merge_loc) / float(fs_anchor)
+    anchor_merge_offset_sec = anchor_merge_sec - anchor_center_sec
+
+    do_anchor_locked_reprocess = bool(config.get("REPROCESS_ANCHOR_LOCKED", False))
+    if do_anchor_locked_reprocess:
+        print(f"[{anchor_detector}] STRICT anchor locked reprocess enabled.")
+        adr = det_results[anchor_detector]
+        # The anchor defines the network event time.
+        old_anchor_start_sec = float(adr.get("discovery_start_idx", adr["start_idx"])) / float(fs_anchor)
+        new_anchor_start_sec = anchor_merge_sec - float(t_merge_obs)
+        anchor_psd_event_sec = float(adr.get("t_event_est_diag", anchor_center_sec))
+        print(f"[{anchor_detector}] ANCHOR_LOCKED_REPROCESS: target_center={anchor_center_sec:.6f}s, target_merge={anchor_merge_sec:.6f}s, "
+              f"merge_offset_ms={anchor_merge_offset_sec * 1e3:+.3f}, locked_start={new_anchor_start_sec:.6f}s, "
+              f"old_discovery_start={old_anchor_start_sec:.6f}s, delta_start={(old_anchor_start_sec - new_anchor_start_sec):+.6f}s")
+        target_center_sec = anchor_center_sec + float(anchor_geom_delay_sec_eff); target_merge_sec = target_center_sec + anchor_merge_offset_sec
+        rebuilt = recondition_detector_locked(config, detector=anchor_detector, fs=fs_anchor, ligo_strain=adr["ligo_strain"], umh_resamp=adr["umh_resamp"],
+                                              target_center_sec=anchor_center_sec, target_merge_sec=anchor_merge_sec, t_merge_obs=t_merge_obs, band_lo=band_lo, 
+                                              band_hi=band_hi, notch_lines=notch_lines, dtype=dtype, network_polarity_flip_applied=network_polarity_flip_applied,
+                                              psd_event_sec=anchor_psd_event_sec)
+
+        # Re-apply the same deterministic anchor fine alignment used in the discovery pass.
+        umh_w_full_aa, umh_cond_full_aa, anchor_i0, anchor_i1, idx_ligo_peak, anchor_idx_center, anchor_idx_merge_loc, lag_meas_sec, \
+            anchor_tau, tau_resid, t_peak_ligo_abs, dsec_int, dsec_sub = Fine_Align(config, anchor_detector, fs_anchor, rebuilt["ligo_w_full"],
+                                                                                    rebuilt["umh_w_full"], rebuilt["umh_cond_full"], 
+                                                                                    idx_merge_loc=rebuilt["idx_merge_loc"])
+        rebuilt["idx_ligo_peak"] = int(idx_ligo_peak); rebuilt["t_peak_ligo_abs"] = float(t_peak_ligo_abs)
+        adr["idx_ligo_peak"] = int(idx_ligo_peak); adr["t_peak_ligo_abs"] = float(t_peak_ligo_abs)
+        adr["umh_full"] = rebuilt["umh_full"]; adr["umh_w_full"] = umh_w_full_aa; adr["umh_cond_full"] = umh_cond_full_aa
+        rebuilt["umh_w_full"] = umh_w_full_aa; rebuilt["umh_cond_full"] = umh_cond_full_aa
+        adr["idx_center"] = int(anchor_idx_center); adr["idx_merge_loc"] = int(anchor_idx_merge_loc)
+        rebuilt["idx_center"] = int(anchor_idx_center); rebuilt["idx_merge_loc"] = int(anchor_idx_merge_loc)
+        adr["tau"] = float(anchor_tau); adr["tau_resid"] = float(tau_resid); adr["lag_meas_sec"] = float(lag_meas_sec)
+        rebuilt["tau"] = float(anchor_tau); rebuilt["tau_resid"] = float(tau_resid); rebuilt["lag_meas_sec"] = float(lag_meas_sec)
+
+        # Refresh anchor arrays.
+        adr["ligo_w_full"] = rebuilt["ligo_w_full"]; adr["ligo_cond_full"] = rebuilt["ligo_cond_full"]
+        adr["f_psd"] = rebuilt["f_psd"]; adr["Pxx"] = rebuilt["Pxx"]
+        adr["start_idx"] = int(rebuilt["locked_start_idx"]); adr["t_event_est_diag"] = rebuilt["t_event_sec"]
+        anchor_start_idx = int(adr["start_idx"])
+
+        # Rebuild windows around locked anchor center.
+        fit_before_sec = float(config.get("FIT_WIN_BEFORE_SEC", 0.18)); fit_after_sec = float(config.get("FIT_WIN_AFTER_SEC", 0.22))
+        
+        anchor_i0 = int(max(0, round(anchor_idx_center - fit_before_sec * fs_anchor)))
+        anchor_i1 = int(min(N_anchor, round(anchor_idx_center + fit_after_sec * fs_anchor)))
+        anchor_i0_snr = anchor_i0; anchor_i1_snr = anchor_i1
+        adr["i0"] = anchor_i0; adr["i1"] = anchor_i1; adr["i0_snr"] = anchor_i0_snr; adr["i1_snr"] = anchor_i1_snr
+        anchor_ligo_w_full = adr["ligo_w_full"]; anchor_umh_w_full = adr["umh_w_full"]
+
+        psd_map_dict[anchor_detector] = {"freqs": rebuilt["f_psd"].astype(dtype), "psd": rebuilt["Pxx"].astype(dtype)}
+
+        rho_signed, rho_abs, t_peak_abs, match_lagged, lag_samp, i0_snr, i1_snr = \
+            matched_filter_snr_window(config, anchor_detector, fs_anchor, N_anchor, anchor_ligo_w_full, anchor_umh_w_full, anchor_idx_center,
+                                        anchor_tau, anchor_i0, anchor_i1, dtype=dtype)
+        adr["rho_signed"] = rho_signed; adr["rho_abs"] = rho_abs
+        adr["t_peak"] = t_peak_abs; adr["lag_samples_peak"] = lag_samp
+        adr["i0_snr"] = i0_snr; adr["i1_snr"] = i1_snr; anchor_i0_snr = i0_snr; anchor_i1_snr = i1_snr
+        # Refresh anchor handle and diagnostic timing used by non-anchors.
+        anchor = adr; anchor_t_peak = t_peak_abs
+
+        lw_win = anchor_ligo_w_full[i0_snr:i1_snr].astype(dtype); uw_win = anchor_umh_w_full[i0_snr:i1_snr].astype(dtype)
+        num_L = np.vdot(lw_win, lw_win).real; num_U = np.vdot(uw_win, uw_win).real
+        if not (np.isfinite(num_L) and np.isfinite(num_U)) or num_U <= EPS_SAFE_FLOOR: k_phys = float("nan")
+        else: k_phys = float(np.sqrt(num_L / num_U))
+
+        corr = np.vdot(lw_win, uw_win).real
+        sign_corr = 1.0 if corr >= 0.0 else -1.0
+
+        lc_win = rebuilt["ligo_cond_full"][i0_snr:i1_snr].astype(float); uc_win = rebuilt["umh_cond_full"][i0_snr:i1_snr].astype(float)
+        resid_cond = rebuilt["ligo_cond_full"] - rebuilt["umh_cond_full"]; resid_w = rebuilt["ligo_w_full"] - rebuilt["umh_w_full"]
+
+        diag, resid_cond, resid_w, dt_env2_ligo, dt_env3_ligo, dt_env2_umh, dt_env3_umh = \
+            chirp_diagnostics(config, anchor_detector, fs_anchor, f_min, f_merge, f_ref, lw_win, uw_win, rebuilt["ligo_w_full"], rebuilt["umh_w_full"],
+                              k_phys, rebuilt["idx_merge_loc"], rho_signed, lag_samp, i0_snr, i1_snr, geom_delay_sec_raw=anchor_geom_delay_sec_raw, 
+                              geom_delay_sec_eff=0.0, t_peak_abs=t_peak_abs, t_event_sec=rebuilt["t_event_sec"], lag_meas_sec=0.0,
+                              anchor_t_peak_abs=t_peak_abs, BINARY_IOTA_DEG=BINARY_IOTA_DEG, pol_psi_deg=pol_psi_deg,
+                              F_plus=adr["F_plus"], F_cross=adr["F_cross"], sign_pred_gen=adr["sign_pred_gen"], global_pol=global_pol_eff,
+                              sign_corr=sign_corr, detector_polarity_flip_applied=adr["detector_polarity_flip_applied"], lc_win=lc_win, uc_win=uc_win,
+                              ligo_cond_full=rebuilt["ligo_cond_full"], umh_cond_full=rebuilt["umh_cond_full"], dtype=dtype)
+        anchor_dt_env2_ligo = dt_env2_ligo; anchor_dt_env3_ligo = dt_env3_ligo
+        anchor_dt_env2_umh  = dt_env2_umh; anchor_dt_env3_umh  = dt_env3_umh
+        adr["lw_win"] = lw_win; adr["uw_win"] = uw_win
+        adr["k_phys"] = k_phys; adr["sign_corr"] = sign_corr
+        adr["resid_cond"] = resid_cond; adr["resid_w"] = resid_w
+        adr["dt_env2_ligo"] = dt_env2_ligo; adr["dt_env3_ligo"] = dt_env3_ligo; adr["dt_env2_umh"] = dt_env2_umh; adr["dt_env3_umh"] = dt_env3_umh
+        adr["diag"] = diag
+        summary[anchor_detector] = diag
+
+        print(f"[{anchor_detector}] ANCHOR_TRACK_CHECK: track_merge={(anchor_start_idx / fs_anchor + t_merge_obs + anchor_tau):.6f}s, "
+              f"target_merge={anchor_idx_merge_loc / fs_anchor:.6f}s, "
+              f"diff_ms={((anchor_start_idx / fs_anchor + t_merge_obs + anchor_tau) - (anchor_idx_merge_loc / fs_anchor)) * 1e3:+.3f}")
+    else: print(f"[{anchor_detector}] Anchor kept from discovery pass for sweep speed.")
+
 
     # Process each detector using the Global Anchored Alignment.
     for detector in det_fnd:
@@ -2949,7 +3240,6 @@ def run_ligo_compiler_test(config_overrides=None):
         umh_w_short =      dr["umh_w_short"]
         umh_w_full =       dr["umh_w_full"]
         umh_cond_full =    dr["umh_cond_full"]
-        #uw_win =           dr["uw_win"]
 
         resid_cond =       dr["resid_cond"]
         resid_w =          dr["resid_w"]
@@ -2980,18 +3270,54 @@ def run_ligo_compiler_test(config_overrides=None):
         t_event_sec =      dr["t_event_est_diag"]
         lag_meas_sec =     dr["lag_meas_sec"]
 
+
         # ------------------------------------------------------------
         # Align all detectors from Anchor Detector so only one alignment.
         # ------------------------------------------------------------
         if(anchor_detector != detector):
             print(f"Non Anchor {detector}, Re-Align based on {anchor_detector}")
-            umh_w_full, umh_cond_full, peak_lag, i0_snr, i1_snr, idx_center, idx_merge_loc, tau, shift_samples, \
-            delta_geom_sec, lag_meas_sec = align_umh_to_global(config, detector, fs, N_ligo, start_idx, t_merge_obs, umh_w_full,
-                                                                  umh_cond_full, anchor_i0_snr, anchor_i1_snr, anchor_idx_center, 
-                                                                  geom_delay_sec_eff)
+            
+            anchor_event_sec = float(anchor_idx_center) / float(anchor["fs"])
+            anchor_merge_offset_sec = 0.0
+            target_center_sec = anchor_event_sec + float(geom_delay_sec_eff); target_merge_sec  = target_center_sec
+
+            do_locked_reprocess = bool(config.get("REPROCESS_NONANCHORS_LOCKED", True)) or bool(config.get("STRICT_NETWORK_REPROCESS", False))
+            if do_locked_reprocess:
+                # Locked non-anchor reprocess: Use anchor time + geometry. Do not use this detector's broad discovery start_idx except for diagnostics.
+                if bool(config.get("PRINT_LOCKED_REPROCESS_DIAG", True)):
+                    old_start_sec = float(start_idx) / float(fs); new_start_sec = target_merge_sec - float(t_merge_obs)
+                    print(f"[{detector}] LOCKED_REPROCESS: target_center={target_center_sec:.6f}s, target_merge={target_merge_sec:.6f}s, "
+                          f"locked_start={new_start_sec:.6f}s, old_discovery_start={old_start_sec:.6f}s, delta_start={(old_start_sec - new_start_sec):+.6f}s")
+
+                # Rebuild LIGO conditioning + PSD using locked detector event time.
+                ligo_strain = dr["ligo_strain"]; umh_resamp = dr["umh_resamp"]
+                detector_psd_event_sec = float(dr.get("t_event_est_diag", target_center_sec))
+                rebuilt = recondition_detector_locked(config, detector=detector, fs=fs, ligo_strain=dr["ligo_strain"], umh_resamp=dr["umh_resamp"],
+                                                      target_center_sec=target_center_sec, target_merge_sec=target_merge_sec, t_merge_obs=t_merge_obs, 
+                                                      band_lo=band_lo, band_hi=band_hi, notch_lines=notch_lines, dtype=dtype, 
+                                                      network_polarity_flip_applied=network_polarity_flip_applied, psd_event_sec=detector_psd_event_sec)
+                ligo_w_full = rebuilt["ligo_w_full"]; ligo_cond_full = rebuilt["ligo_cond_full"]
+                umh_w_full = rebuilt["umh_w_full"]; umh_cond_full = rebuilt["umh_cond_full"]
+                f_psd = rebuilt["f_psd"]; Pxx = rebuilt["Pxx"]
+                t_event_sec = rebuilt["t_event_sec"]; start_idx = rebuilt["locked_start_idx"]
+                dr["ligo_w_full"] = ligo_w_full; dr["ligo_cond_full"] = ligo_cond_full
+                dr["f_psd"] = f_psd; dr["Pxx"] = Pxx
+                dr["start_idx"] = start_idx; dr["t_event_est_diag"] = t_event_sec
+                psd_map_dict[detector] = {"freqs": f_psd.astype(dtype), "psd": Pxx.astype(dtype)}
+
+            # Geometry-lock UMH merge to anchor time + detector delay.
+            umh_w_full, umh_cond_full, peak_lag, i0, i1, i0_snr, i1_snr, idx_center, idx_merge_loc, tau, shift_samples, \
+            delta_geom_sec, lag_meas_sec = align_umh_to_global(config, detector, fs, N_ligo, start_idx, t_merge_obs, umh_w_full, umh_cond_full,
+                                                               anchor_i0, anchor_i1, anchor_i0_snr, anchor_i1_snr, anchor_idx_center, anchor_event_sec, 
+                                                               geom_delay_sec_eff, anchor_merge_offset_sec=0.0)
+            # Sanity check: after locked alignment this should be near zero.
+            if bool(config.get("PRINT_LOCKED_REPROCESS_DIAG", True)):
+                track_merge_time = (float(start_idx) + float(t_merge_obs) * float(fs) + float(tau) * float(fs)) / float(fs)
+                print(f"[{detector}] TRACK_CHECK: track_merge={track_merge_time:.6f}s, target={target_merge_sec:.6f}s, "
+                    f"diff_ms={(track_merge_time - target_merge_sec) * 1e3:+.3f}")
 
             dr["umh_w_full"] = umh_w_full; dr["umh_cond_full"] = umh_cond_full;
-            dr["peak_lag"] = peak_lag; dr["i0_snr"] = i0_snr; dr["i1_snr"] = i1_snr;
+            dr["peak_lag"] = peak_lag; dr["i0"] = i0; dr["i1"] = i1; dr["i0_snr"] = i0_snr; dr["i1_snr"] = i1_snr;
             dr["idx_center"] = idx_center; dr["idx_merge_loc"] = idx_merge_loc; dr["tau"] = tau; dr["lag_meas_sec"] = lag_meas_sec
 
             rho_signed, rho_abs, t_peak, match_lagged, lag_samp, i0_snr, i1_snr  = matched_filter_snr_window(config,
@@ -3015,13 +3341,13 @@ def run_ligo_compiler_test(config_overrides=None):
             uc_win = umh_cond_full[i0_snr:i1_snr].astype(float)
             resid_cond = ligo_cond_full - umh_cond_full
 
-            ligo_xcorr_delay_int_sec, ligo_xcorr_delay_sec, ligo_xcorr_strength = meas_delay_xcorr_sec(fs, anchor_ligo_w_full, ligo_w_full, idx_center=anchor_idx_center)
-            umh_xcorr_delay_int_sec, umh_xcorr_delay_sec, umh_xcorr_strength = meas_delay_xcorr_sec(fs, anchor_umh_w_full, umh_w_full, idx_center=anchor_idx_center)
+            ligo_xcorr_delay_int_sec, ligo_xcorr_delay_sec, ligo_xcorr_strength = meas_delay_xcorr_sec(fs, anchor_ligo_w_full, ligo_w_full, idx_center=idx_center)
+            umh_xcorr_delay_int_sec, umh_xcorr_delay_sec, umh_xcorr_strength = meas_delay_xcorr_sec(fs, anchor_umh_w_full, umh_w_full, idx_center=idx_center)
 
             diag, resid_cond, resid_w, dt_env2_ligo, dt_env3_ligo, dt_env2_umh, dt_env3_umh = chirp_diagnostics(config, detector, fs, f_min, f_merge, f_ref, 
                         lw_win, uw_win, ligo_w_full, umh_w_full, k_phys, idx_merge_loc,
-                        rho_signed, lag_samp, i0_snr, i1_snr, geom_delay_sec_raw=geom_delay_sec_raw, geom_delay_sec_eff=geom_delay_sec_eff, t_peak_abs=t_peak_ligo_abs,
-                        t_event_sec=t_event_sec, lag_meas_sec=lag_meas_sec, anchor_t_peak_abs=anchor_t_peak_ligo_abs,
+                        rho_signed, lag_samp, i0_snr, i1_snr, geom_delay_sec_raw=geom_delay_sec_raw, geom_delay_sec_eff=geom_delay_sec_eff, t_peak_abs=t_peak,
+                        t_event_sec=t_event_sec, lag_meas_sec=lag_meas_sec, anchor_t_peak_abs=anchor_t_peak,
                         BINARY_IOTA_DEG=BINARY_IOTA_DEG, pol_psi_deg=pol_psi_deg, F_plus=F_plus, F_cross=F_cross, sign_pred_gen=sign_pred_gen, 
                         global_pol=global_pol_eff, sign_corr=sign_corr, detector_polarity_flip_applied=detector_polarity_flip_applied, lc_win=lc_win, uc_win=uc_win, 
                         ligo_xcorr_delay_sec=ligo_xcorr_delay_sec, ligo_xcorr_strength=ligo_xcorr_strength, 
@@ -3125,15 +3451,7 @@ def run_ligo_compiler_test(config_overrides=None):
             f_L, t_L, S_L_db, vmin_L, vmax_L = build_spectrogram(ligo_win_t, fs_base, fs_spec, i0_Dsp, NPER, NOVER, p_lo, p_hi)
             f_U, t_U, S_U_db, vmin_U, vmax_U = build_spectrogram(umh_win_t,  fs_base, fs_spec, i0_Dsp, NPER, NOVER, p_lo, p_hi)
 
-            vmin = min(vmin_L, vmin_U)
-            vmax = max(vmax_L, vmax_U)
-
-            # Flatten dB values
-            #all_vals = np.concatenate([S_L_db.ravel(), S_U_db.ravel()])
-
-            # Compute robust percentiles
-            #vmin = np.percentile(all_vals, p_lo)   # Lower 2% of data → dark blue
-            #vmax = np.percentile(all_vals, p_hi)   # Upper 2% → bright yellow
+            vmin = min(vmin_L, vmin_U); vmax = max(vmax_L, vmax_U)
 
             all_vals = np.concatenate([S_L_db.ravel(), S_U_db.ravel()])
             all_vals = all_vals[np.isfinite(all_vals)]
@@ -3175,8 +3493,10 @@ def run_ligo_compiler_test(config_overrides=None):
             # --- Overlay: model f_GW(t) track from generator (if available) ---
             try:
                 if(t_track_obs is not None and f_track_obs is not None):
-                    t_track_det = t_track_obs + (start_idx / fs_base) + float(tau) + geom_delay_sec_raw
-                    #print(f"[INFO] Start:{(start_idx / fs_base)}, tau:{tau}, geom_delay_sec_raw:{geom_delay_sec_raw}, geom_delay_sec_eff:{geom_delay_sec_eff}")
+                    t_track_det = t_track_obs + (start_idx / fs_base) + float(tau)
+                    t_merge_track = float(t_merge_obs) + (start_idx / fs_base) + float(tau)
+                    t_merge_target = (anchor_idx_center / fs_base) + float(geom_delay_sec_eff)
+                    print(f"[{detector}] TRACK_CHECK: track_merge={t_merge_track:.6f}, target={t_merge_target:.6f}, diff_ms={(t_merge_track - t_merge_target)*1e3:.3f}")
 
                     t0_win = i0_Dsp / fs_base; t1_win = i1_Dsp / fs_base
                     mask = (t_track_det >= t0_win) & (t_track_det <= t1_win)
@@ -3329,7 +3649,7 @@ def run_ligo_compiler_test(config_overrides=None):
             # --- Overlay: model f_GW(t) track (for "no residual chirp" check) ---
             try:
                 # Map intrinsic track into this detector frame
-                t_track_det = t_track_obs + (anchor_start_idx / fs_base) + float(tau) + geom_delay_sec_raw
+                t_track_det = t_track_obs + (start_idx / fs_base) + float(tau)
                 mask = (t_track_det >= t_R[0]) & (t_track_det <= t_R[-1])
                 if np.any(mask): plt.plot(t_track_det[mask], f_track_obs[mask], color='white', lw=1.0, alpha=0.9, label=r'$f_{\rm GW}(t)$')
             except Exception as e: print(f"Generate Visuals: [{detector}] residual freq_track overlay skipped: {e}")
@@ -3394,13 +3714,34 @@ def run_ligo_compiler_test(config_overrides=None):
     # --- NETWORK SNR for any detectors used ---
     summary["NETWORK"] = {"Anchor": anchor_detector, "Polarity": global_pol, "Network_Polarity_Flip_Applied": network_polarity_flip_applied, "Polarity_Effective": global_pol_eff}
     if all(det in summary for det in det_fnd):
-        rho_list = []
+        rho_net, mis_mean_net, mis_rms_net, rms_ratio_net, k_amp_net = None, None, None, None, None
+        rho_list, mis_mean_list, mis_rms_list, rms_ratio_list, k_amp_list = [], [], [], [], []
         for det in det_fnd:
-            val = summary[det].get("rho_peak_abs", None)
-            if isinstance(val, (int, float)) and np.isfinite(val): rho_list.append(float(val))
+            rho_val = summary[det].get("rho_peak_abs", None)
+            if isinstance(rho_val, (int, float)) and np.isfinite(rho_val): rho_list.append(float(rho_val))
+            mis_mean_val = summary[det].get("f_mismatch_mean", None)
+            if isinstance(mis_mean_val, (int, float)) and np.isfinite(mis_mean_val): mis_mean_list.append(float(mis_mean_val))
+            mis_rms_val = summary[det].get("f_mismatch_rms", None)
+            if isinstance(mis_rms_val, (int, float)) and np.isfinite(mis_rms_val): mis_rms_list.append(float(mis_rms_val))
+            rms_ratio_val = summary[det].get("rms_ratio_resid", None)
+            if isinstance(rms_ratio_val, (int, float)) and np.isfinite(rms_ratio_val): rms_ratio_list.append(float(rms_ratio_val))
+            k_amp_val = summary[det].get("k_ls", None)
+            if isinstance(k_amp_val, (int, float)) and np.isfinite(k_amp_val) and k_amp_val>0: k_amp_list.append(float(k_amp_val))
         if rho_list: rho_net = float(np.sqrt(np.sum(np.square(rho_list))))
-        else: rho_net = None
-        summary["NETWORK"]["rho_net"] = rho_net
+
+        if rho_list: rho_net = float(np.sqrt(np.sum(np.square(rho_list))))
+        if mis_mean_list: mis_mean_net = float(np.mean(mis_mean_list))
+        if mis_rms_list: mis_rms_net = float(np.mean(mis_rms_list))
+        if rms_ratio_list: rms_ratio_net = float(np.mean(rms_ratio_list))
+        if k_amp_list: k_amp_net = float(np.exp(np.mean(np.log(k_amp_list))))
+
+        summary["NETWORK"]["rho_net"]             = rho_net
+        summary["NETWORK"]["D_L_UMH_Mpc"]         = float(umh.get("distance_Mpc"))
+        summary["NETWORK"]["f_mismatch_mean_net"] = mis_mean_net
+        summary["NETWORK"]["f_mismatch_rms_net"]  = mis_rms_net
+        summary["NETWORK"]["k_amp_net"]           = k_amp_net
+        summary["NETWORK"]["R_resid_net"]         = rms_ratio_net
+        summary["NETWORK"]["t_peak_anchor"]       = anchor_t_peak
 
     with open(f"{file_path}_CMP_Summary.json", "w") as f: json.dump(summary, f, indent=2, sort_keys=False)
     print(f"[done] Summary written to '{file_path}_CMP_Summary.json'")
@@ -3431,7 +3772,8 @@ def str2bool(s):
     raise argparse.ArgumentTypeError(f"Cannot interpret '{s}' as bool.")
 
 if __name__ == "__main__":
-    overrides = {}
+    overrides = {"profile": "replica_gw150914"}         # Used to Specify Override Profile to use.
+    #overrides = {"profile": "replica_gw170814"}         # Used to Specify Override Profile to use.
 
     parser = argparse.ArgumentParser(description="UMH LIGO Compiler – compare UMH chirp to LIGO data.")
     # Optional positional JSON overrides file
